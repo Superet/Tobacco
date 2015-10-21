@@ -210,7 +210,7 @@ proc sql noprint;
 	on A.upc = B.upc and A.year = B.year;
 	
 	create table sales as 
-	select A.*, B.channel_code, B.fips_state_descr, B.fips_county_descr, pharmacy as pharmacy
+	select A.*, B.channel_code, B.fips_state_descr, B.fips_county_descr, pharmacy2 as pharmacy
 	from (select C.*, D.size1_amount*D.multi as size, brand_descr, upc_descr
 		  from tmp as C inner join my_products as D on 
 		  C.upc = D.upc and C.upc_ver_uc = D.upc_ver_uc) as A 

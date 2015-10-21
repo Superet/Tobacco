@@ -4,6 +4,8 @@ libname mylib "E:\Users\ccv103\Documents\Research\tobacco\SAS_temp";
 %let outfile = %sysfunc(catx(%str(), E:\Users\ccv103\Desktop\store_pharmacy,.csv));
 %put &outfile;
 
+%let sel_state = 'MA' 'CA'; 
+
 *************;
 * Read data *;
 *************;
@@ -76,8 +78,10 @@ run;
 proc sql noprint; 
 	create table my_stores as 
 	select *
-	from (select *, cats(put(fips_state_code, z2.), put(fips_county_code, z3.)) as fips from orig_stores)
-	where fips in (select fips from mycounty); 
+/*	from (select *, cats(put(fips_state_code, z2.), put(fips_county_code, z3.)) as fips from orig_stores)
+	where fips in (select fips from mycounty); */
+	from orig_stores
+	where fips_state_descr in (&sel_state); 
 quit; 
 
 * Check if the key is unique;
@@ -235,9 +239,9 @@ quit;
 * Using votes by majority rule, the stores that are classified as pharmacy more than half the times are pharmacy; 
 data tmp1; 
 	set tmp1(rename = (pharmacy2 = p) drop = _TYPE_ _FREQ_); 
-	pharmacy2 = 1*(p > .5); 
+	pharmacy = 1*(p > .5); 
 proc sort; by store_code_uc; 
-proc freq; table channel_code * pharmacy2; 
+proc freq; table channel_code * pharmacy; 
 run;
 
 * Merge the new pharmacy flag to the store data; 

@@ -6,6 +6,8 @@ library(gridExtra)
 
 setwd("/Users/chaoqunchen/Documents/Research/Tobacco/processed_data")
 load("cigar_hms.rdata")
+county	<- read.csv("county_treatment.csv", header = T)
+store.pharm	<- read.csv("pharmacy_store.csv", header = T)
 
 # Set plotting parameters 
 plot.wd	<- "~/Desktop"
