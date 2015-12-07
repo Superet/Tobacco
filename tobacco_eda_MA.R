@@ -183,3 +183,47 @@ if(make_plot){
 	}
 	dev.off()
 }
+
+######################################################
+# Add counties from neighboring states into controls # 
+######################################################
+load("sales_ma_ext.rdata")
+
+# Convert variables of date format
+sales_MA			<- subset(sales_MA, channel_code != "L")		# Ignore liqure stores
+sales_MA$week_end	<- as.Date(as.character(sales_MA$week_end), format = "%Y-%m-%d")
+sales_MA$upcv		<- with(sales_MA, paste(upc, upc_ver_uc, sep= "-"))
+mycounty	<- subset(mycounty, state == "MA")
+mycounty$effect_date	<- as.Date(as.character(mycounty$effect_date), format = "%m/%d/%y")
+mycounty$control_date	<- as.Date(as.character(mycounty$control_date), format = "%m/%d/%y")
+
+# Market-level aggregation
+pack.size	<- 20
+# Organize market-level data
+table(sales_MA$channel_code)/nrow(sales_MA)				# Examine the frequence of channel 
+tmp			<- subset(mycounty, treatment == 1)
+mncp 		<- tmp$municipality							# Unique cases
+event_date 	<- tmp$effect_date							# Event date
+
+# The counties from neighboring states
+tmp			<- unique(sales_MA[sales_MA$fips_state_descr != "MA", list(fips_state_descr, fips_county_descr)])
+tmp[order(tmp$fips_state_descr),]
+nb.county	<- c("HARTFORD", "WINDHAM", "LITCHFIELD", "TOLLAND", 
+				 "CHESHIRE", "HILLSBOROUGH", "ROCKINGHAM", 
+				 "PROVIDENCE")
+
+# Restrict to quantity from 2008-2009, focus on Boston case
+tmp		<- as.character(mycounty[mycounty$municipality == "Boston", "fips_county_descr"])
+tmpdat	<- subset(sales_MA, fips_county_descr %in% c(tmp, nb.county) & year >= 2008 & year <= 2009)
+tmpdat	<- data.table(tmpdat)
+tmpdat	<- tmpdat[,list(quantity = sum(units*size)/pack.size ),
+					by = list(fips_state_descr, fips_county_descr, week_end)]
+tmpdat$MA	<- factor(ifelse(tmpdat$fips_state_descr == "MA", 1, 0))					
+
+ggplot(tmpdat, aes(week_end, quantity, col = fips_county_descr, linetype = fips_state_descr)) + geom_line()
+
+ggplot(subset(tmpdat, fips_state_descr != "MA"), aes(week_end, quantity, col = fips_county_descr, linetype = fips_state_descr)) + geom_line()
+
+
+
+

@@ -4,7 +4,7 @@ libname mylib "E:\Users\ccv103\Documents\Research\tobacco\SAS_temp";
 %let outfile = %sysfunc(catx(%str(), E:\Users\ccv103\Desktop\graph_cigar_, &sysdate9.,.pdf));
 %put &outfile; 
 
-%let sel_state = "MA" "CA"; 
+%let sel_state = 'MA' 'CT' 'RI' 'NH'; 
 
 *************;
 * Read data *;
@@ -169,7 +169,7 @@ data movename;
 	;
 run;
 
-* Read data from 2008 to 2011; 
+* Read data from 2006 to 2013; 
 data tmp_file; 
 	length filep $300. folder $300.; 
 	set movename; 
@@ -205,16 +205,17 @@ proc sql noprint;
 	create table tmp as 
 	select A.*, ifn(upc_ver_uc=., 1, upc_ver_uc) as upc_ver_uc
 	from (	select *, year(week_end) as year 
-		  	from movement(drop = feature display) where upc in (select upc from my_products )) as A 
-		left join upc_ver as B
+		  	from movement(drop = feature display) 
+			where upc in (select upc from my_products ) and store_code_uc in (select store_code_uc from my_stores)) as A 
+		inner join upc_ver as B
 	on A.upc = B.upc and A.year = B.year;
 	
 	create table sales as 
-	select A.*, B.channel_code, B.fips_state_descr, B.fips_county_descr, pharmacy2 as pharmacy
+	select A.*, B.channel_code, B.fips_state_descr, B.fips_county_descr, pharmacy, pharmacy2, medication_sale
 	from (select C.*, D.size1_amount*D.multi as size, brand_descr, upc_descr
 		  from tmp as C inner join my_products as D on 
 		  C.upc = D.upc and C.upc_ver_uc = D.upc_ver_uc) as A 
-		inner join store_pharmacy as B
+		left join store_pharmacy as B
 	on A.store_code_uc = B.store_code_uc and A.year = B.year; 
 	
 	drop table tmp; 
@@ -237,7 +238,7 @@ PROC EXPORT DATA= sales(where = (fips_state_descr = "CA"))
 RUN;
 
 * MA data; 
-PROC EXPORT DATA= sales(where = (fips_state_descr = "MA"))
+PROC EXPORT DATA= sales
             OUTFILE= "E:\Users\ccv103\Desktop\sale_MA.csv"
             DBMS=csv REPLACE;
      PUTNAMES=YES;
@@ -247,6 +248,7 @@ RUN;
 * R code to generate .rdata *; 
 *****************************;
 /*
+library(data.table)
 setwd("E:/Users/ccv103/Desktop")
 
 sales_CA	<- read.csv("sale_CA.csv", header = T)
@@ -255,11 +257,24 @@ head(sales_CA)
 
 save(sales_CA, file = "sales_CA.rdata")
 
-sales_MA	<- read.csv("sale_MA.csv", header = T)
+sales_MA	<- fread("sale_MA.csv", header = T)
 names(sales_MA)	<- tolower(names(sales_MA))
 head(sales_MA)
-save(sales_MA, file = "sales_MA.rdata")
 
+tmp	<- unique(subset(sales_MA, fips_state_descr != "MA"), by = c("fips_state_descr", "fips_county_descr"))
+tmp[order(fips_state_descr),list(fips_state_descr, fips_county_descr)]
+# outside.county	<- tmp$fips_county_descr
+# Only focus on the counties that have touching borders with MA
+outside.county		<- c("LITCHFIELD", "HARTFORD", "TOLLAND", "WINDHAM", 
+						"CHESHIRE", "HILLSBOROUGH", "ROCKINGHAM", 
+						"PROVIDENCE", "NEWPORT"
+						)		
+
+# Drop the data from the counties that don't have borders with MA
+sales_MA 	<- subset(sales_MA, !(fips_state_descr != "MA" & fips_county_descr %in% setdiff(tmp$fips_county_descr, outside.county)))
+sales_MA	<- sales_MA[,setdiff(names(sales_MA), c("upc_descr", "brand_descr")), with = FALSE]
+
+save(sales_MA, file = "sales_ma_ext.rdata")
 */
 
 

@@ -4,7 +4,7 @@ libname mylib "E:\Users\ccv103\Documents\Research\tobacco\SAS_temp";
 %let outfile = %sysfunc(catx(%str(), E:\Users\ccv103\Desktop\store_pharmacy,.csv));
 %put &outfile;
 
-%let sel_state = 'MA' 'CA'; 
+%let sel_state = 'MA' 'CA' 'CT' 'RI' 'NH'; 
 
 *************;
 * Read data *;
@@ -78,8 +78,6 @@ run;
 proc sql noprint; 
 	create table my_stores as 
 	select *
-/*	from (select *, cats(put(fips_state_code, z2.), put(fips_county_code, z3.)) as fips from orig_stores)
-	where fips in (select fips from mycounty); */
 	from orig_stores
 	where fips_state_descr in (&sel_state); 
 quit; 
@@ -195,9 +193,9 @@ run;
 data store_pharm;
 	set store_pharm; 
 	pharmacy1 = 1* (medication_sale > &mypharm_thresh + 1); 
-	if channel_code = 'D' then pharmacy1 = 1; 
+	/*if channel_code = 'D' then pharmacy1 = 1; */
 	pharmacy2 = 1* (medication_sale > &mypharm_thresh2 + 1); 
-	if channel_code = 'D' then pharmacy2 = 1; 
+	/*if channel_code = 'D' then pharmacy2 = 1; */
 run;
 proc contents data = store_pharm; run;
 
@@ -248,7 +246,7 @@ run;
 proc sort data = store_pharm; by channel_code parent_code store_code_uc; run;
 proc sort data = tmp1; 		  by channel_code parent_code store_code_uc; run;
 data store_pharm; 
-	merge store_pharm(drop = pharmacy1 pharmacy2) tmp1(drop = p);
+	merge store_pharm(drop = pharmacy1) tmp1;
 	by channel_code parent_code store_code_uc;
 run;
 proc sort data = store_pharm; by store_code_uc year; run;

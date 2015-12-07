@@ -1,0 +1,8 @@
+#!/bin/bash
+#PBS -j oe
+#PBS -l walltime=08:00:00
+#PBS -l mem=10gb
+#PBS -l ncpus=1
+
+cd /sscc/home/c/ccv103/Exercise
+R CMD BATCH tobacco_MA_DID_retail.R tobacco_retail.log
