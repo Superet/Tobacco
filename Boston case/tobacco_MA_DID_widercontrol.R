@@ -416,18 +416,83 @@ price.reg[[6]]	<- lmer(log(price) ~ post_treat + treatment + tax + pop+ (1 + tre
 						data = mydata )
 
 # Compute cluster standard error
-cls.se		<- lapply(price.reg[1:4], function(x) Cls.se.fn(x, cluster.vec = mydata$upcv, est.table = FALSE)$se)
+# cls.se		<- lapply(price.reg[1:4], function(x) Cls.se.fn(x, cluster.vec = mydata$upcv, est.table = FALSE)$se)
 
 # Organize regression results
 stargazer(price.reg, type = "html", align = TRUE, title = "Price DID regressions at upc-county-week level", 
 		keep = c("post_treat", "tax"), 
 		covariate.labels = c("Treatment*Post", "Tax", paste("Treatment*Post*", as.character(ma.policy$municipality), sep="")),
-		se	= c(cls.se, NULL, NULL), 
+		# se	= c(cls.se, NULL, NULL), 
 		omit.stat = c("f","ll"), no.space = TRUE, 
 		notes = "First 4 report clustered se.",
 		add.lines = list(c("Week","","","FE","FE","","RC"), c("Municipality","","","","","RC","RC"), 
 						 c("UPC","FE","FE","FE","FE","RE","RE")), 
 		out = paste(plot.wd, "/tobacco_ma_rms_price.html", sep=""))
 
+#--------------------------------#
+# Price data at store-week level #
+tmp_data	<- sales_MA[,list(store_code_uc, week_end, upcv, price, size, fips_state_descr, fips_county_descr, medication_sale, channel_code)]
+tmp_data	<- tmp_data[, price := price/size * pack.size]
+summary(tmp_data$price)					
+quantile(tmp_data$price, c(.01, .99))
 
+# Drop some unreasonable observations. 
+tmp_data	<- subset(tmp_data, price >= 2 & price <= 10)
+setkeyv(tmp_data, c("fips_state_descr", "fips_county_descr", "store_code_uc", "week_end", "upcv"))					
+for(i in 1:nrow(ma.policy)){
+	tmp.ctl	<- unlist(strsplit(as.character(ma.policy[i,"ctr_county"]), ","))
+	tmp		<- subset(tmp_data, fips_county_descr %in% c(ma.policy[i,"county"], tmp.ctl, outside.county) & 
+								abs(week_end - ma.policy[i,"eff_date"]) < my.wind)
+	tmp		<- tmp[, ':='(municipality = ma.policy[i,"municipality"], effect_date = ma.policy[i,"eff_date"], 
+						treatment = ifelse(fips_county_descr == ma.policy[i,"county"], 1, 0),
+						retail_aff = ifelse(fips_county_descr == ma.policy[i,"county"], ma.policy[i,"retail_aff"], 0) ) ]
+	if(i == 1){
+		store_price_data	<- tmp
+	}else{
+		store_price_data	<- unique(rbind(store_price_data, tmp), by = c("fips_county_descr", "store_code_uc", "week_end", "upcv"))
+	}
+}
+# Check duplicates 
+sum(duplicated(store_price_data, by = c("fips_county_descr", "store_code_uc", "week_end", "upcv")))
+store_price_data 	<- merge(store_price_data, taxtbl, by = c("fips_state_descr", "week_end"), all.x = T )
+store_price_data	<- merge(store_price_data, cnty, by= c("fips_state_descr", "fips_county_descr"), all.x = T)
 
+# Run regressions 
+mydata		<- store_price_data
+mydata		<- mydata[,':='(store_week = paste(store_code_uc, week_end, sep = "*"), post = 1*(week_end >= effect_date), 
+							medication_sale = ifelse(is.na(medication_sale), 0, medication_sale/1000))]
+mydata		<- mydata[,':='(post_treat = treatment * post, retail_aff = ifelse(post==1, retail_aff, 0), 
+							post_treat_pharm = treatment * post * medication_sale, 
+							post_pharm	= post * medication_sale, 
+							treat_pharm = treatment * medication_sale)]							
+mydata		<- pdata.frame(mydata, index = c("upcv", "store_week"))
+
+storew.price.reg			<- setNames(vector("list", 6), c("DID", "HET_DID", "DID_WEEKFE", "HET_DID_WEEKFE", "DID_MIX", "DID_MIX_WEEK"))
+storew.price.reg[[1]]	<- plm(log(price) ~ post_treat + post_treat_pharm + treatment + post + treat_pharm + post_pharm + tax + pop, data = mydata, model = "within" )
+storew.price.reg[[2]]	<- plm(log(price) ~ municipality:post_treat + municipality:post_treat_pharm + 
+						municipality:treatment + municipality:post + municipality:treat_pharm + municipality:post_pharm+ tax + pop+ channel_code, 
+						data = mydata, model = "within" )
+storew.price.reg[[3]]	<- plm(log(price) ~ post_treat + post_treat_pharm + treatment + treat_pharm + post_pharm+ tax + pop+ channel_code + factor(week_end), 
+							data = mydata, model = "within" )
+storew.price.reg[[4]]	<- plm(log(price) ~ municipality:post_treat + municipality:post_treat_pharm + 
+						municipality:treatment + municipality:treat_pharm + municipality:post_pharm+ tax + pop + channel_code + factor(week_end), 
+						data = mydata, model = "within" )
+storew.price.reg[[5]]	<- lmer(log(price) ~ post_treat + post_treat_pharm + treatment + post + treat_pharm + post_pharm+ tax + pop + channel_code + 
+											(1 + treatment + post_treat + post_treat_pharm|municipality) + (1|upcv), data = mydata )
+storew.price.reg[[6]]	<- lmer(log(price) ~ post_treat + post_treat_pharm + treatment + treat_pharm + post_pharm + tax + pop+ channel_code + 
+											(1 + treatment + post_treat + post_treat_pharm|municipality) + (1|week_end) + (1|upcv), data = mydata )
+
+# Compute cluster standard error
+# cls.se		<- lapply(storew.price.reg[1:4], function(x) Cls.se.fn(x, cluster.vec = mydata$fips_county_descr, est.table = FALSE)$se)
+
+# Organize regression results
+stargazer(storew.price.reg, type = "html", align = TRUE, title = "Price DID regressions at upc-store-week level", 
+		keep = c("post_treat", "tax"), 
+		covariate.labels = c("Treatment*Post", "Treatment*Post*PharmSale", "Tax",
+							paste("Treatment*Post*", as.character(ma.policy$municipality), sep=""), 
+							paste("Treatment*Post*PharmSale*", as.character(ma.policy$municipality), sep="")),
+		# se	= c(cls.se, NULL, NULL), 
+		omit.stat = c("f","ll"), no.space = TRUE, 
+		notes = c("First 4 models report clusteredse.", "The unit of pharmacy sales is $1000."),
+		add.lines = list(c("Week","","","FE","FE","","RC"), c("Municipality","","","","","RC","RC")), 
+		out = paste(plot.wd, "/tobacco_ma_rms_store_medication_price.html", sep=""))

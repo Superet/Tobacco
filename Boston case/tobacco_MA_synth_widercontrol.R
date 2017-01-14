@@ -95,7 +95,9 @@ tmp_data	<- sales_MA[,list(quantity = sum(units*size)/pack.size,
 							mass_quant	= sum(units*size*1*(channel_code == "M"))/pack.size, 
 							food_quant	= sum(units*size*1*(channel_code == "F"))/pack.size ),
 					by = list(fips_state_descr, fips_county_descr, week_end)]
-setkeyv(tmp_data, c("fips_county_descr", "week_end"))					
+setkeyv(tmp_data, c("fips_county_descr", "week_end"))			
+
+mkt_sale	<- data.frame(NULL)		
 for(i in 1:nrow(ma.policy)){
 	tmp.ctl	<- unlist(strsplit(as.character(ma.policy[i,"ctr_county"]), ","))
 	tmp		<- subset(tmp_data, fips_county_descr %in% c(ma.policy[i,"county"], tmp.ctl, outside.county) & 
@@ -103,11 +105,8 @@ for(i in 1:nrow(ma.policy)){
 	tmp		<- tmp[, ':='(municipality = ma.policy[i,"municipality"] , effect_date = ma.policy[i,"eff_date"],
 						treatment = ifelse(fips_county_descr == ma.policy[i,"county"], 1, 0), 
 						 retail_aff = ifelse(fips_county_descr == ma.policy[i,"county"], ma.policy[i,"retail_aff"], 0)) ]
-	if(i == 1){
-		mkt_sale	<- tmp
-	}else{
-		mkt_sale	<- rbind(mkt_data, tmp)
-	}
+
+	mkt_sale	<- rbind(mkt_sale, data.frame(tmp))
 }
 sum(duplicated(mkt_sale, by = c("fips_county_descr", "week_end")))
 mkt_sale 	<- merge(mkt_sale, taxtbl, by = c("fips_state_descr", "week_end"), all.x = T )
