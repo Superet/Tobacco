@@ -4,6 +4,7 @@ library(data.table)
 library(lubridate)
 library(scales)
 library(stargazer)
+library(xlsx)
 
 # setwd("U:/Users/ccv103/Desktop")
 setwd("~/Documents/Research/Tobacco/processed_data")
@@ -14,12 +15,19 @@ ar			<- .6
 panelists 	<- read.csv("tob_CVS_pan.csv", header = T)
 purchases	<- read.csv("tob_CVS_purchases.csv", header = T)
 trips		<- read.csv("tob_CVS_trips.csv", header = T)
+ma.policy	<- read.xlsx("MA_policy.xlsx", 1)
+sel.channel		<- c("Grocery", "Discount Store", "Drug Store", "Warehouse Club", "Dollar Store", "Convenience Store", 
+					"Service Station", "All Other Stores", "Gas Mini Mart", "Tobacco Store", "Health Food Store")
+trips			<- subset(trips, channel_type %in% sel.channel)			
+purchases		<- subset(purchases, trip_code_uc %in% trips$trip_code_uc)		
+names(panelists)	<- tolower(names(panelists))
 
 #################
 # Organize data # 
 #################
 # Add week
 event.date	<- as.Date("2014-09-01", format = "%Y-%m-%d")
+event.month	<- month(event.date) + 12
 cvs.ret	<- 4914		# retailer_code for CVS
 qunit	<- 20		# 20 cigaretts per pack 
 firstw	<- as.Date("2012-12-31", format = "%Y-%m-%d") 	# The first week in 2013
@@ -40,25 +48,28 @@ endweek				<- c(min(purchases$week), max(purchases$week))
 trips$cvs	<- ifelse(trips$retailer_code == cvs.ret, 1, 0)
 purchases	<- merge(purchases, trips[,c("trip_code_uc", "cvs", "channel_type", "retailer_code")], by = "trip_code_uc", all.x=T)
 
+# Mark the places that already implement tobacco ban
+ma.policy$countynm	<- paste(toupper(substring(ma.policy$COUNTY, 1, 1)), tolower(substring(ma.policy$COUNTY, 2)), sep = "")
+sort(unique(panelists[panelists$statecode == "MA","countynm"]))
+cnty		<- c("Berkeley","Daly City","Healdsburg","Hollister","Marin","Richmond","San Francisco","Santa Clara", "Sonoma" )
+panelists$ban_ard	<- with(panelists, 1*((statecode=="MA" & countynm %in% ma.policy$countynm)| (statecode=="CA" & countynm %in% cnty)))
+sort(unique(panelists[panelists$ban_ard==1,"countynm"]))
+table(panelists$ban_ard)
+
 # Classify households distance to CVS
-sum(is.na(panelists$distance)); sum(is.na(panelists$distance_wgr))
-hist(panelists$distance)
-median(panelists$distance)
 tmp	<- data.table(panelists)
 tmp	<- tmp[,list(nzip = length(unique(panelist_zip_code)), nd = length(unique(distance))), by = list(household_code)]
 summary(tmp)
 mean(tmp$nzip>1)
+mypan	<- panelists[panelists$panel_year == 2014,]			# Use 2014 panelist profile
+median(mypan$distance, na.rm = T)
+mypan			<- subset(mypan, !is.na(distance))
 
-# Distribution of distance to Walgreens
-hist(panelists$distance_wgr, breaks = 100)
-median(panelists$distance_wgr)
-cor(panelists$distance, panelists$distance_wgr, use = "complete.obs")
-plot(panelists$distance, panelists$distance_wgr)
-
-panelists$cvs_in2	<- ifelse(panelists$distance <=2, 1, 0)
-panelists$cvs_in5	<- ifelse(panelists$distance <=5, 1, 0)
-panelists$cvs_in10	<- ifelse(panelists$distance <=10, 1, 0)
-panelists$wgr_in2	<- ifelse(panelists$distance_wgr <=2, 1, 0)
+mypan$cvs_in2	<- ifelse(mypan$distance <=2, 1, 0)
+mypan$cvs_in3	<- ifelse(mypan$distance <=3, 1, 0)
+mypan$cvs_in5	<- ifelse(mypan$distance <=5, 1, 0)
+mypan$wgr_in2	<- ifelse(mypan$distance_wgr <=2, 1, 0)
+mypan$treat		<- with(mypan, 1*(cvs_in2 ==1 & ban_ard == 0))
 
 # Classify light vs heavy smokers
 tmp1		<- data.table(purchases)
@@ -68,15 +79,81 @@ tmp1		<- tmp1[, list(consum = sum(quantity*size/qunit, na.rm=T)/(as.numeric(max(
 summary(tmp1$consum)
 tmp1$heavy 	<- 1*(tmp1$consum > 2.5)
 tmp			<- setNames(tmp1$heavy, tmp1$household_code)
-panelists$heavy 	<- tmp[as.character(panelists$household_code)]
+mypan$heavy 	<- tmp[as.character(mypan$household_code)]
 
-# Merge household data to purchase and trip data 
-purchases	<- merge(purchases, panelists[,c("household_code", "panel_year", "distance","cvs_in2", "cvs_in5", "cvs_in10", "wgr_in2", "heavy")], 
-						by.x = c("household_code", "year"), by.y = c("household_code", "panel_year"), all.x=T)
-trips	<- merge(trips, panelists[,c("household_code", "panel_year", "cvs_in2", "cvs_in5", "cvs_in10", "wgr_in2","heavy")], 
-						by.x = c("household_code", "year"), by.y = c("household_code", "panel_year"), all.x=T)
-						
-purchases$cvs_c	<- factor(purchases$cvs, levels = c(1,0), labels = c("CVS", "Non-CVS"))
+# Collapse demographic levels
+new.col		<- list(setNames(c(2500,6500, 	9000,	11000,	13500, 	17500,	22500,	27500, 	32500,	37500, 	42500,	47500, 55000, 	65000, 	75000, 100000), 
+							 c(3,	4,		6,		8,		10,		11,		13,		15,		16,		17,		18,		19,		21,		23,		26,		27)), 		# Income code		# Income code
+					setNames(c(NA, 23, 27, 32, 37, 42, 47, 52, 60, 65), 0:9),				# Age code
+					setNames(c(rep(1,8), 0), 1:9),											# Kids code
+					setNames(c(rep(c("House","Condo"), 3), "Mobile"), 1:7), 				# Residence code
+					setNames(c("White", "African American", "Asian", "Other"), 1:4),		# Race code
+					setNames(c(NA, rep("Employed", 3), "Unemployed", 
+								rep(c("Employed", "Both employed", "Both employed", "Both employed", "Only one employed"), 3), 
+								"Unemployed", "Only one employed", "Only one employed", "Only one employed", "Both unemployed"), 
+							do.call(paste, expand.grid(c(0,1:3,9), c(0, 1:3, 9))) ) )						
+names(new.col)	<- c("household_income", "age", "age_and_presence_of_children", "residence", "race", "employment")
+new.col
+
+mypan$income			<- new.col[["household_income"]][as.character(mypan$household_income)]
+mypan$male_head_age		<- new.col[["age"]][as.character(mypan$male_head_age)]
+mypan$female_head_age	<- new.col[["age"]][as.character(mypan$female_head_age)]
+mypan$age				<- rowMeans(mypan[,c("female_head_age", "male_head_age")], na.rm=T)	
+mypan$have_kids			<- new.col[["age_and_presence_of_children"]][as.character(mypan$age_and_presence_of_children)]
+mypan$employment		<- paste(mypan$male_head_employment, mypan$female_head_employment)
+mypan$employment		<- new.col[["employment"]][as.character(mypan$employment)]
+mypan$employment		<- factor(mypan$employment, levels = c("Unemployed", "Employed", "Only one employed", "Both employed", "Both unemployed"))
+mypan$race				<- factor(new.col[["race"]][as.character(mypan$race)], levels = new.col[["race"]])
+demo.col				<- c("income", "age", "have_kids", "employment", "race")
+sel						<- sapply(demo.col, function(i) is.numeric(mypan[,i]))
+summary(mypan[,demo.col[sel]])
+lapply(demo.col[!sel], function(i) table(mypan[,i]))
+
+purchases	<- subset(purchases, household_code %in% mypan$household_code)
+trips		<- subset(trips, household_code %in% mypan$household_code)
+trips		<- merge(trips, mypan[,c("household_code", "ban_ard", "distance","cvs_in2", "cvs_in5", "wgr_in2", "heavy", "treat")], 
+						by = "household_code", all.x=T)
+purchases	<- merge(purchases, mypan[,c("household_code", "ban_ard", "distance","cvs_in2", "cvs_in5", "wgr_in2", "heavy", "treat")], 
+						by = "household_code", all.x=T)						
+
+# Calculate pre-event shopping behavior for each household
+tmp1	<- data.table(purchases)
+tmp1	<- tmp1[, list(q = sum(quantity*size/qunit, na.rm=T)), by = list(household_code, month)]
+tmp2 	<- data.table(trips)
+tmp2	<- tmp2[,list(	trip_cvs 		= 1*(sum(cvs)>0), 
+						trip_othdrug 	= sum(channel_type == "Drug Store" & cvs ==0 ), 
+						trip_othchannel = sum(channel_type != "Drug Store"), 
+						trip_grocery	= sum(channel_type == "Grocery"), 
+						trip_discount	= sum(channel_type == "Discount Store"), 
+						trip_convenience= sum(channel_type == "Convenience Store"), 
+						trip_service	= sum(channel_type == "Service Station"), 
+						trip_gas		= sum(channel_type == "Gas Mini Mart"), 
+						dol_cvs 		= sum(total_spent*cvs, na.rm = T), 
+						dol_othdrug		= sum(total_spent*(1-cvs)*1*(channel_type == "Drug Store"), na.rm = T), 
+						dol_othchannel	= sum(total_spent*1*(channel_type != "Drug Store"), na.rm = T), 
+						dol_grocery		= sum(total_spent*1*(channel_type == "Grocery"), na.rm = T), 
+						dol_discount	= sum(total_spent*1*(channel_type == "Discount Store"),na.rm=T), 
+						dol_convenience	= sum(total_spent*1*(channel_type == "Convenience Store"),na.rm=T),  
+						dol_service		= sum(total_spent*1*(channel_type == "Service Station"), na.rm=T),  
+						dol_gas			= sum(total_spent*1*(channel_type == "Gas Mini Mart"),na.rm=T), 
+						dol_total		= sum(total_spent)
+						), 
+				by = list(household_code, month)]
+tmp2	<- merge(tmp2, tmp1, by = c("household_code", "month"), all.x = T)				
+tmp2[is.na(tmp2)]	<- 0
+tmp2	<- tmp2[month < event.month,]
+tmp2	<- tmp2[,list(	pre_q 				= mean(q),
+						pre_trip_cvs 		= mean(trip_cvs), 
+						pre_trip_othdrug 	= mean(trip_othdrug), 
+						pre_trip_othchannel = mean(trip_othchannel), 
+						pre_dol_cvs 		= mean(dol_cvs), 
+						pre_dol_othdrug		= mean(dol_othdrug), 
+						pre_dol_othchannel	= mean(dol_othchannel)), by = list(household_code)]
+mypan	<- merge(mypan, tmp2, by = "household_code", all.x = T)	
+bhv.col		<- c("pre_q", "pre_trip_cvs", "pre_trip_othdrug", "pre_trip_othchannel", "pre_dol_cvs", "pre_dol_othdrug", "pre_dol_othchannel")
+sapply(bhv.col, function(i) sum(is.na(mypan[,i])))				
+sel		<- apply(mypan[,bhv.col], 1, function(x) any(is.na(x)))
+mypan	<- mypan[!sel,]
 
 # Check the tenure of households 
 tmp		<- data.table(trips)
@@ -119,7 +196,7 @@ stargazer(tmp[,list(consum, interpurchase, ntrip, ncvs, nother_drug,distance)], 
 			covariate.labels = c("Consumption (packs)", "Inter-purchase days", "No. stores of cigarett trips/month", 
 								"No. trips", "Trips to CVS", "Trips to other drug stores", "Distance to CVS (mi.)"), 
 			summary.stat = c("n", "min", "median", "mean", "p25", "p75", "max", "sd"), 
-			out = paste(plot.wd, "/cvs_sumstat.html", sep=""))			
+			out = paste(plot.wd, "/cvs_sumstat.html", sep=""))			 						
 
 # --------------------------------------------------# 
 # Cigarrette market share by retailers / by channel #
@@ -146,6 +223,32 @@ tmp		<- data.table(purchases[sel,])
 tmp		<- tmp[,list(q = sum(quantity*size/qunit, na.rm=T)), by = list(cvs)]
 tmp		<- tmp[,mkt.share := q/sum(q)]
 cat("Market share within drug stores in 2013:\n"); print(tmp); cat("\n")
+
+###############################################
+# Summary stats between treatment and control #
+###############################################
+# Demographic differences by treatment 
+sel		<- sapply(demo.col, function(i) is.numeric(mypan[,i]))
+ggtab	<- NULL
+for(i in c(demo.col[sel], bhv.col)){
+	tmp		<- t.test(mypan[,i] ~ mypan$treat)
+	tmp1	<- c(tmp$estimate, dif = diff(tmp$estimate), tmp$statistic, p = tmp$p.value)
+	ggtab	<- rbind(ggtab, tmp1)
+}
+ggtab			<- rbind(c(table(mypan$treat), rep(NA, 3)), ggtab)
+rownames(ggtab)	<- c("N", demo.col[sel], bhv.col)
+colnames(ggtab)	<- c("Treatment", "Control", "Difference", "t stat", "P value")
+
+ggtab1		<- NULL
+for(i in demo.col[!sel]){
+	tmp		<- table(mypan[,i], mypan$treat)
+	tmp1	<- chisq.test(tmp)
+	tmp 	<- apply(tmp, 2, function(x) x/sum(x))
+	tmp1	<- rbind(cbind(tmp, tmp[,2]-tmp[,1], NA, NA), c(NA, NA, NA,tmp1$statistic, p = tmp1$p.value))
+	ggtab1	<- rbind(ggtab1, tmp1)
+}
+colnames(ggtab1)	<- c("Treatment", "Control", "Difference", "t stat", "P value")
+cat("Tests of demongraphic differences:\n"); print(rbind(ggtab, ggtab1)); cat("\n")
 
 ########################################
 # Overall trend of cigarette purchases #
@@ -206,43 +309,6 @@ ggplot(ggtmp, aes(week, value, linetype = cvs_in2)) + geom_line() +
 			guides(linetype = guide_legend(title = "Distance to CVS")) + 
 			theme(legend.position = "bottom") + 
 			labs(y = "Spending ($)", title = "Per capita consumption by consumer groups") 
-
-
-# -----------------------------------------------------------------#						
-# Compare consumption trend by consumer group -- close to Walgreen #
-ggtmp	<- data.table(purchases)			
-ggtmp	<- ggtmp[!week %in% endweek, list(Total = sum(quantity*size/qunit, na.rm=T), 
-					CVS = sum(quantity*size*cvs/qunit, na.rm=T), 
- 					OtherDrug = sum(quantity*size*(1-cvs)*1*(channel_type=="Drug Store")/qunit, na.rm=T), 
-					OtherChannel = sum(quantity*size*(1-cvs)*1*(channel_type!="Drug Store")/qunit, na.rm=T)), 
-				by = list(cvs_in2, wgr_in2,week)]
-ggtmp1	<- melt(ggtmp, id.vars = c("cvs_in2", "wgr_in2", "week"))
-ggtmp1$wgr_in2	<- factor(ggtmp1$wgr_in2, levels = c(1, 0), labels = c("Less than 2 mi.", "Greater than 2 mi."))
-ggtmp1$cvs_in2	<- factor(ggtmp1$cvs_in2, levels = c(1, 0), labels = c("Less than 2 mi.", "Greater than 2 mi."))
-
-pdf(paste(plot.wd, "/fg_overall_trend_distwgr.pdf", sep=""), width = ww, height = ww*ar)
-ggplot(subset(ggtmp1, !is.na(cvs_in2) & !is.na(wgr_in2)), aes(week, value, linetype = cvs_in2, color = wgr_in2)) + geom_line() + 
-			geom_vline(xintercept = as.numeric(event.date), col = "red") + 
-			facet_wrap(~variable, scales = "free") + 
-			guides(linetype = guide_legend(title = "Distance to CVS"), color = guide_legend(title = "Distance to Walgreens")) + 
-			theme(legend.position = "bottom") + 
-			labs(y = "Volume (packs)", title = "Total cigarette sales by consumer groups") 
-dev.off()			
-
-# Compare the market share by consumer group
-ggtmp	<- ggtmp[,':='(CVS = CVS/Total, OtherDrug = OtherDrug/Total, OtherChannel = OtherChannel/Total)]
-ggtmp1	<- melt(ggtmp, id.vars = c("cvs_in2", "wgr_in2", "week"))
-ggtmp1$wgr_in2	<- factor(ggtmp1$wgr_in2, levels = c(1, 0), labels = c("Less than 2 mi.", "Greater than 2 mi."))
-ggtmp1$cvs_in2	<- factor(ggtmp1$cvs_in2, levels = c(1, 0), labels = c("Less than 2 mi.", "Greater than 2 mi."))
-ggplot(subset(ggtmp1, variable != "Total" & !is.na(cvs_in2) & !is.na(wgr_in2)), 
-			aes(week, value, linetype = cvs_in2, color = wgr_in2)) + geom_line() + 
-			geom_vline(xintercept = as.numeric(event.date), col = "red") + 
-			facet_wrap(~variable, scales = "free") + 
-			guides(linetype = guide_legend(title = "Distance to Walgreens")) + 
-			theme(legend.position = "bottom") + 
-			scale_y_continuous(labels = percent) + 
-			labs(y = "Market share", title = "Market share by consumer groups")			
-
 
 # ---------------------------------------------------------------------------- #
 # Compare per capita consumption trend by consumer group -- Close to Walgreens #			
@@ -423,35 +489,23 @@ ggtmp1	<- ggtmp1[,list(Total 	= sum(total_price_paid)/sum(total_spent),
 						CVS 	= sum(total_price_paid*1*(cvs==1))/sum(total_spent*1*(cvs==1)), 
 						OtherDrug  = sum(total_price_paid*1*(cvs==0&channel_type=="Drug Store"))/sum(total_spent*1*(cvs==0&channel_type=="Drug Store")),
 						OtherChannel  = sum(total_price_paid*1*(cvs==0&channel_type!="Drug Store"))/sum(total_spent*1*(cvs==0&channel_type!="Drug Store")) 
-						), by = list(cvs_in2, heavy,household_code, week)]
-ggtmp2	<- melt(ggtmp1, id.vars = c("cvs_in2", "household_code", "week"))
-ggplot(ggtmp2, aes(value)) + geom_histogram(aes(y=..density..), binwidth = .01) + 
-		facet_wrap(~ variable, scales = "free") + xlim(c(0, .5))
+						), by = list(treat, heavy,household_code, week)]
+ggtmp2	<- melt(ggtmp1, id.vars = c("treat", "heavy", "household_code", "week"))
+# ggplot(ggtmp2, aes(value)) + geom_histogram(aes(y=..density..), binwidth = .01) + 
+# 		facet_wrap(~ variable, scales = "free") + xlim(c(0, .5)) + 
+# 		labs(title = "Histogram of fraction of cigarette spending out of basket in differnt channels")
 ggplot(subset(ggtmp2, value > 0), aes(value)) + geom_histogram(aes(y=..density..), binwidth = .01) + 
 		facet_wrap(~ variable, scales = "free") + 
 		labs(title = "Histogram of fraction of cigarette spending conditional on cigarette purchases")
 
+# Trend of fraction of cigarette spending
 ggtmp2	<- ggtmp1[,list(Total = mean(Total, na.rm=T), CVS = mean(CVS, na.rm=T), 
 						OtherDrug = mean(OtherDrug, na.rm=T), OtherChannel = mean(OtherChannel, na.rm=T)), 
-					by = list(cvs_in2, week)]						
-ggtmp2	<- melt(ggtmp2, id.vars = c("week", "cvs_in2"))
-ggtmp2$cvs_in2	<- factor(ggtmp2$cvs_in2, levels = c(1, 0), labels = c("Less than 2 mi.", "Greater than 2 mi."))
+					by = list(treat, week)]						
+ggtmp2	<- melt(ggtmp2, id.vars = c("week", "treat"))
+ggtmp2$treat	<- factor(ggtmp2$treat, levels = c(1, 0), labels = c("Less than 2 mi.", "Greater than 2 mi."))
 
-ggplot(ggtmp2, aes(week, value, linetype = cvs_in2)) + geom_line() + 
-			geom_vline(xintercept = as.numeric(event.date), col = "red") + 
-			facet_wrap(~variable, scales = "free") + 
-			guides(linetype = guide_legend(title = "Distance to CVS")) + 
-			theme(legend.position = "bottom") + 
-			labs(y = "Fraction of cigarette spending", title = "Fraction of cigarette spending")
-
-ggtmp2	<- ggtmp1[,list(Total = mean(Total, na.rm=T), CVS = mean(CVS, na.rm=T), 
-						OtherDrug = mean(OtherDrug, na.rm=T), OtherChannel = mean(OtherChannel, na.rm=T)), 
-					by = list(cvs_in2, heavy,week)]						
-ggtmp2	<- melt(ggtmp2, id.vars = c("week", "cvs_in2", "heavy"))
-ggtmp2$cvs_in2	<- factor(ggtmp2$cvs_in2, levels = c(1, 0), labels = c("Less than 2 mi.", "Greater than 2 mi."))
-ggtmp2$heavy	<- factor(ggtmp2$heavy, levels = c(1, 0), labels = c("Heavy", "Light"))
-
-ggplot(ggtmp2, aes(week, value, linetype = cvs_in2, color = heavy)) + geom_line() + 
+ggplot(ggtmp2, aes(week, value, linetype = treat)) + geom_line() + 
 			geom_vline(xintercept = as.numeric(event.date), col = "red") + 
 			facet_wrap(~variable, scales = "free") + 
 			guides(linetype = guide_legend(title = "Distance to CVS")) + 

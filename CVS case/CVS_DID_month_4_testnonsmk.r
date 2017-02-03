@@ -6,10 +6,13 @@ library(stargazer)
 library(zipcode)
 library(plm)
 library(lme4)
+library(xlsx)
+library(stargazer)
+library(MatchIt)
 
 # setwd("~/Documents/Research/Tobacco/processed_data")
 # plot.wd		<- "~/Desktop"
-setwd("U:/Users/ccv103/Desktop")
+setwd("U:/Users/ccv103/Documents/Research/tobacco/processed_data")
 # setwd("/sscc/home/c/ccv103/Tobacco") 
 plot.wd		<- getwd()
 out.file	<- "cvs_did_month_testnsmk"
@@ -22,6 +25,7 @@ purchases	<- read.csv("tob_CVS_purchases.csv", header = T)
 trips		<- read.csv("tob_CVS_trips.csv", header = T)
 nsmk.pan 	<- read.csv("tob_CVS_nonsmk_pan.csv", header = T)
 nsmk.trips	<- read.csv("tob_CVS_nonsmk_trips.csv", header = T)
+ma.policy	<- read.xlsx("MA_policy.xlsx", 1)
 
 panelists$smk	<- 1
 nsmk.pan$smk	<- 0
@@ -29,9 +33,14 @@ trips$smk		<- 1
 nsmk.trips$smk	<- 0
 panelists		<- rbind(panelists, nsmk.pan)
 trips			<- rbind(trips, nsmk.trips)
+names(panelists)	<- tolower(names(panelists))
+sel.channel		<- c("Grocery", "Discount Store", "Drug Store", "Warehouse Club", "Dollar Store", "Convenience Store", 
+					"Service Station", "All Other Stores", "Gas Mini Mart", "Tobacco Store", "Health Food Store")
+trips			<- subset(trips, channel_type %in% sel.channel)					
+purchases		<- subset(purchases, trip_code_uc %in% trips$trip_code_uc)		
 
 # # Select a random sample
-# sel		<- sample(unique(panelists$household_code), .1*length(unique(panelists$household_code)))
+# sel		<- sample(unique(panelists$household_code), .05*length(unique(panelists$household_code)))
 # panelists	<- subset(panelists, household_code %in% sel)
 # trips 		<- subset(trips, household_code %in% sel)
 # purchases	<- subset(purchases, household_code %in% sel )
@@ -80,6 +89,14 @@ endweek				<- c(min(purchases$week), max(purchases$week))
 trips$cvs	<- ifelse(trips$retailer_code == cvs.ret, 1, 0)
 purchases	<- merge(purchases, trips[,c("trip_code_uc", "cvs", "channel_type")], by = "trip_code_uc", all.x=T)
 
+# Mark the places that already implement tobacco ban
+ma.policy$countynm	<- paste(toupper(substring(ma.policy$COUNTY, 1, 1)), tolower(substring(ma.policy$COUNTY, 2)), sep = "")
+sort(unique(panelists[panelists$statecode == "MA","countynm"]))
+cnty		<- c("Berkeley","Daly City","Healdsburg","Hollister","Marin","Richmond","San Francisco","Santa Clara", "Sonoma" )
+panelists$ban_ard	<- with(panelists, 1*((statecode=="MA" & countynm %in% ma.policy$countynm)| (statecode=="CA" & countynm %in% cnty)))
+sort(unique(panelists[panelists$ban_ard==1,"countynm"]))
+table(panelists$ban_ard)
+
 # Classify households distance to CVS
 tmp	<- data.table(panelists)
 tmp	<- tmp[,list(nzip = length(unique(panelist_zip_code)), nd = length(unique(distance))), by = list(household_code)]
@@ -105,9 +122,41 @@ tmp			<- setNames(tmp1$heavy, tmp1$household_code)
 mypan$heavy 	<- tmp[as.character(mypan$household_code)]
 mypan[is.na(mypan$heavy), "heavy"]	<- 0
 
+# Collapse demographic levels
+new.col		<- list(setNames(c(2500,6500, 	9000,	11000,	13500, 	17500,	22500,	27500, 	32500,	37500, 	42500,	47500, 55000, 	65000, 	75000, 100000), 
+							 c(3,	4,		6,		8,		10,		11,		13,		15,		16,		17,		18,		19,		21,		23,		26,		27)), 		# Income code		# Income code
+					setNames(c(NA, 23, 27, 32, 37, 42, 47, 52, 60, 65), 0:9),				# Age code
+					setNames(c(rep(1,8), 0), 1:9),											# Kids code
+					setNames(c(rep(c("House","Condo"), 3), "Mobile"), 1:7), 				# Residence code
+					setNames(c("White", "African American", "Asian", "Other"), 1:4),		# Race code
+					setNames(c(NA, rep("Employed", 3), "Unemployed", 
+								rep(c("Employed", "Both employed", "Both employed", "Both employed", "Only one employed"), 3), 
+								"Unemployed", "Only one employed", "Only one employed", "Only one employed", "Both unemployed"), 
+							do.call(paste, expand.grid(c(0,1:3,9), c(0, 1:3, 9))) ) )						
+names(new.col)	<- c("household_income", "age", "age_and_presence_of_children", "residence", "race", "employment")
+new.col
+
+mypan$income			<- new.col[["household_income"]][as.character(mypan$household_income)]
+mypan$male_head_age		<- new.col[["age"]][as.character(mypan$male_head_age)]
+mypan$female_head_age	<- new.col[["age"]][as.character(mypan$female_head_age)]
+mypan$age				<- rowMeans(mypan[,c("female_head_age", "male_head_age")], na.rm=T)	
+mypan$have_kids			<- new.col[["age_and_presence_of_children"]][as.character(mypan$age_and_presence_of_children)]
+mypan$employment		<- paste(mypan$male_head_employment, mypan$female_head_employment)
+mypan$employment		<- new.col[["employment"]][as.character(mypan$employment)]
+mypan$employment		<- factor(mypan$employment, levels = c("Unemployed", "Employed", "Only one employed", "Both employed", "Both unemployed"))
+mypan$race				<- factor(new.col[["race"]][as.character(mypan$race)], levels = new.col[["race"]])
+demo.col				<- c("income", "age", "have_kids", "employment", "race")
+sel						<- sapply(demo.col, function(i) is.numeric(mypan[,i]))
+summary(mypan[,demo.col[sel]])
+lapply(demo.col[!sel], function(i) table(mypan[,i]))
+
 purchases	<- subset(purchases, household_code %in% mypan$household_code)
 trips		<- subset(trips, household_code %in% mypan$household_code)
+trips		<- merge(trips, mypan[,c("household_code","cvs_in2","heavy","ban_ard")], by = "household_code", all.x = T)
 
+############################
+# Organize regression data # 
+############################
 # -------------------------- #
 # Fill in non-puchases months # 
 # Complete month for each household 
@@ -124,36 +173,114 @@ tmp2 	<- data.table(trips)
 tmp2	<- tmp2[,list(	trip_cvs 		= 1*(sum(cvs)>0), 
 						trip_othdrug 	= sum(channel_type == "Drug Store" & cvs ==0 ), 
 						trip_othchannel = sum(channel_type != "Drug Store"), 
+						trip_grocery	= sum(channel_type == "Grocery"), 
+						trip_discount	= sum(channel_type == "Discount Store"), 
+						trip_convenience= sum(channel_type == "Convenience Store"), 
+						trip_service	= sum(channel_type == "Service Station"), 
+						trip_gas		= sum(channel_type == "Gas Mini Mart"), 
 						dol_cvs 		= sum(total_spent*cvs, na.rm = T), 
 						dol_othdrug		= sum(total_spent*(1-cvs)*1*(channel_type == "Drug Store"), na.rm = T), 
-						dol_othchannel	= sum(total_spent*1*(channel_type != "Drug Store"), na.rm = T)
+						dol_othchannel	= sum(total_spent*1*(channel_type != "Drug Store"), na.rm = T), 
+						dol_grocery		= sum(total_spent*1*(channel_type == "Grocery"), na.rm = T), 
+						dol_discount	= sum(total_spent*1*(channel_type == "Discount Store"),na.rm=T), 
+						dol_convenience	= sum(total_spent*1*(channel_type == "Convenience Store"),na.rm=T),  
+						dol_service		= sum(total_spent*1*(channel_type == "Service Station"), na.rm=T),  
+						dol_gas			= sum(total_spent*1*(channel_type == "Gas Mini Mart"),na.rm=T), 
+						dol_total		= sum(total_spent)
 						), 
 				by = list(household_code, month)]
-dim(tmp2)		
+dim(tmp1); dim(tmp2)		
+sum(is.na(tmp2))
 summary(tmp2[,list(trip_cvs, trip_othdrug, trip_othchannel)])
 mydata	<- merge(tmp1, tmp2, by = c("household_code", "month"), all.x = T)
+dim(mydata)
+
+# Cigarette spending
+# Actual cigarette purchases 
+tmp3	<- data.table(purchases)
+tmp3	<- tmp3[,list(	cigdol 		= sum(total_price_paid - coupon_value, na.rm=T), 
+						cigdol_cvs	= sum((total_price_paid - coupon_value)*cvs, na.rm=T),
+						cigdol_othdrug 	= sum((total_price_paid - coupon_value)*(1-cvs)*1*(channel_type == "Drug Store"), na.rm=T), 
+						cigdol_othchannel= sum((total_price_paid - coupon_value)*1*(channel_type != "Drug Store"), na.rm=T)), 
+				by = list(household_code, month)]
+mydata	<- merge(mydata, tmp3, by = c("household_code", "month"), all.x = T)
 sel 	<- is.na(mydata)
 mydata[sel]	<- 0
+mydata$netdol			<- with(mydata, dol_total - cigdol)
+mydata$netdol_cvs		<- with(mydata, dol_cvs - cigdol_cvs)
+mydata$netdol_othdrug	<- with(mydata, dol_othdrug - cigdol_othdrug)
+mydata$netdol_othchannel<- with(mydata, dol_othchannel - cigdol_othchannel)
 cat("Summary stats:\n"); print(summary(mydata[, -c(1:2)])); cat("\n")
+
+# Calculate pre-event shopping behavior for each household
+tmp2	<- tmp2[month < event.month,]
+tmp2	<- tmp2[,list(	pre_trip_cvs 		= mean(trip_cvs), 
+						pre_trip_othdrug 	= mean(trip_othdrug), 
+						pre_trip_othchannel = mean(trip_othchannel), 
+						pre_dol_cvs 		= mean(dol_cvs), 
+						pre_dol_othdrug		= mean(dol_othdrug), 
+						pre_dol_othchannel	= mean(dol_othchannel)), by = list(household_code)]
+mypan	<- merge(mypan, tmp2, by = "household_code", all.x = T)	
+bhv.col		<- c("pre_trip_cvs", "pre_trip_othdrug", "pre_trip_othchannel", "pre_dol_cvs", "pre_dol_othdrug", "pre_dol_othchannel")
+sapply(bhv.col, function(i) sum(is.na(mypan[,i])))				
+sel		<- apply(mypan[,bhv.col], 1, function(x) any(is.na(x)))
+mypan	<- mypan[!sel,]
 
 # Create other control variables: city and month 
 mydata$year		<- ifelse(mydata$month > 12, 2014, 2013)
 mydata$month1	<- mydata$month %% 12
 mydata$month1	<- ifelse(mydata$month1 == 0, 12, mydata$month1)
 mydata$month1	<- factor(mydata$month1)
-mydata			<- merge(mydata, mypan[,c("household_code", "panelist_zip_code","distance", "cvs_in2", "wgr_in2", "heavy", "smk")], 
+dim(mydata)
+mydata			<- merge(mydata, mypan[,c("household_code", "panelist_zip_code","distance", "cvs_in2", "wgr_in2", "heavy", "smk", "ban_ard", demo.col)], 
 						by = "household_code", all.x=T)
 dim(mydata)
-mydata$panelist_zip_code	<- clean.zipcodes(mydata$panelist_zip_code)
-data(zipcode)
-mydata			<- merge(mydata, zipcode[,c("zip","city","state")], by.x = "panelist_zip_code", by.y = "zip")
-mydata$scity	<- with(mydata, paste(state, city, sep="-"))
 mydata$after	<- 1*(mydata$month >= event.month)
 mydata$hhmonth	<- paste(mydata$household_code, mydata$month, sep="-")
+mydata$treat	<- with(mydata, 1*(smk == 1 & ban_ard == 0))
+mypan$treat		<- with(mypan, 1*(smk == 1 & ban_ard == 0))
+table(mydata$treat)
+table(mypan$smk == 1 & mypan$ban_ard == 0)
 
-# Plot the trips 
+# Check if any missing values 
+sapply(demo.col, function(i) sum(is.na(mydata[,i])))
+
+rm(list = c("tmp", "tmp1", "tmp2", "tmp3"))
+
+########################
+# Descriptive analysis #
+########################
+# Demographic difference between smokers and nonsmokers 
+sel		<- sapply(demo.col, function(i) is.numeric(mypan[,i]))
+ggtab	<- NULL
+for(i in c(demo.col[sel], bhv.col)){
+	tmp		<- t.test(mypan[,i] ~ mypan$smk)
+	tmp1	<- c(tmp$estimate, dif = diff(tmp$estimate), tmp$statistic, p = tmp$p.value)
+	ggtab	<- rbind(ggtab, tmp1)
+}
+ggtab			<- rbind(c(table(mypan$smk), rep(NA, 3)), ggtab)
+rownames(ggtab)	<- c("N", demo.col[sel], bhv.col)
+colnames(ggtab)	<- c("Non-smokers", "Smokers", "Difference", "t stat", "P value")
+
+ggtab1		<- NULL
+for(i in demo.col[!sel]){
+	tmp		<- table(mypan[,i], mypan$smk)
+	tmp1	<- chisq.test(tmp)
+	tmp 	<- apply(tmp, 2, function(x) x/sum(x))
+	tmp1	<- rbind(cbind(tmp, tmp[,2]-tmp[,1], NA, NA), c(NA, NA, NA,tmp1$statistic, p = tmp1$p.value))
+	ggtab1	<- rbind(ggtab1, tmp1)
+}
+colnames(ggtab1)	<- c("Non-smokers", "Smokers", "Difference", "t stat", "P value")
+cat("Tests of demongraphic differences:\n"); print(rbind(ggtab, ggtab1)); cat("\n")
+
+stargazer(rbind(ggtab, ggtab1), type = "html", align = TRUE, no.space = TRUE, 
+		title = "Tests of demographic difference", 
+		out = paste(plot.wd, "/tb_", out.file, "_demotest_", Sys.Date(), ".html", sep=""))
+
+#----------------#
+# Plot the trips #
 # Shopping trips per week per person #
-ggtmp	<- data.table(subset(trips, cvs_in2 ==1 ))
+ggtmp	<- data.table(subset(trips, cvs_in2 ==1 & !week %in% endweek))
 ggtmp	<- ggtmp[,list(	Total = length(purchase_date)/length(unique(household_code)), 
 						CVS = length(purchase_date[cvs==1])/length(unique(household_code)), 
 						OtherChannel = length(purchase_date[cvs==0 & channel_type != "Drug Store"])/length(unique(household_code)), 
@@ -161,14 +288,14 @@ ggtmp	<- ggtmp[,list(	Total = length(purchase_date)/length(unique(household_code
 				by = list(smk, week)]
 ggtmp	<- melt(ggtmp, id.vars = c("smk", "week"))		
 ggtmp$smk	<- factor(ggtmp$smk, levels = c(1,0), labels = c("Smoker", "Non-smoker"))
-ggplot(ggtmp, aes(week, value, linetype = smk)) + geom_line() + 
+p1 		<- ggplot(ggtmp, aes(week, value, linetype = smk)) + geom_line() + 
 			geom_vline(xintercept = as.numeric(event.date), col = "red") + 
 			facet_wrap(~variable, scales = "free") + 
 			theme(legend.position = "bottom") + 
 			labs(y = "Trips per person", title = "Shopping trips by consumer groups")
 
 # Expenditure 
-ggtmp	<- data.table(subset(trips, cvs_in2 ==1 ))
+ggtmp	<- data.table(subset(trips, cvs_in2 ==1 & !week %in% endweek))
 ggtmp	<- ggtmp[,list(	Total = sum(total_spent)/length(unique(household_code)), 
 						CVS = sum(total_spent[cvs==1])/length(unique(household_code)), 
 						OtherChannel = sum(total_spent[cvs==0 & channel_type != "Drug Store"])/length(unique(household_code)),  
@@ -176,72 +303,356 @@ ggtmp	<- ggtmp[,list(	Total = sum(total_spent)/length(unique(household_code)),
 				by = list(smk, week)]
 ggtmp	<- melt(ggtmp, id.vars = c("smk", "week"))		
 ggtmp$smk	<- factor(ggtmp$smk, levels = c(1,0), labels = c("Smoker", "Non-smoker"))
-ggplot(ggtmp, aes(week, value, linetype = smk)) + geom_line() + 
+p2		<- ggplot(ggtmp, aes(week, value, linetype = smk)) + geom_line() + 
 			geom_vline(xintercept = as.numeric(event.date), col = "red") + 
 			facet_wrap(~variable, scales = "free") + 
 			theme(legend.position = "bottom") + 
 			labs(y = "Expenditure per person", title = "Expenditure by consumer groups")
 
+pdf(paste(plot.wd,"/fg_",out.file, "_trend_", Sys.Date(), ".pdf", sep=""), width = 7.5, height = 7.5*ar)			
+print(p1)
+print(p2)
+dev.off()
 
-##################################
-# DID regression of small window # 
-##################################			
-# Baseline: smokers close to CVS as treatment group and smokers far from CVS as control 
-# Alternative: smokers close to CVS as treatment group and non-smokers close to CVS as control
-mydata1		<- subset(mydata, smk==1 & month >= event.month - 4 & month <= event.month + 3)						
-mydata2		<- subset(mydata, cvs_in2 ==1 & month >= event.month - 4 & month <= event.month + 3)						
+##################
+# DID regression # 
+##################
+sel1		<- mydata$month >= event.month - 4 & mydata$month <= event.month + 3 & mydata$cvs_in2 == 1	# Small window and within limited distance to CVS
+sel2		<- mydata$cvs_in2 == 1																		# Within limited distance to CVS
+sel3		<- mydata$month >= event.month - 4 & mydata$month <= event.month + 3						# Small window
+
+# # ------------------------#
+# # Shopping trip incidence # 
+# trip.ls	<- list(NULL)
+# trip.ls[[1]]	<- plm(trip_cvs ~ after + treat + after*treat, data = mydata[sel1,], 
+# 					index = c("household_code", "month"), model = "within") 
+# trip.ls[[2]]	<- plm(trip_othdrug ~ after + treat + after*treat , data = mydata[sel1,], 
+# 					index = c("household_code", "month"), model = "within")
+# trip.ls[[3]]	<- plm(trip_othchannel ~ after + treat + after*treat , data = mydata[sel1,], 
+# 					index = c("household_code", "month"), model = "within")
+# trip.ls[[4]]	<- plm(trip_cvs ~ after + treat + after*treat + month1, data = mydata[sel2,], 
+# 					index = c("household_code", "month"), model = "within") 
+# trip.ls[[5]]	<- plm(trip_othdrug ~ after + treat + after*treat + month1, data = mydata[sel2,], 
+# 					index = c("household_code", "month"), model = "within")
+# trip.ls[[6]]	<- plm(trip_othchannel ~ after + treat + after*treat + month1, data = mydata[sel2,], 
+# 					index = c("household_code", "month"), model = "within")
+# trip.ls[[7]]	<- plm(trip_cvs ~ after + treat + after*treat, data = mydata[sel3,], 
+# 					index = c("household_code", "month"), model = "within") 
+# trip.ls[[8]]	<- plm(trip_othdrug ~ after + treat + after*treat , data = mydata[sel3,], 
+# 					index = c("household_code", "month"), model = "within")
+# trip.ls[[9]]	<- plm(trip_othchannel ~ after + treat + after*treat , data = mydata[sel3,], 
+# 					index = c("household_code", "month"), model = "within")
+# trip.ls[[10]]	<- plm(trip_cvs ~ after + treat + after*treat + month1, data = mydata, 
+# 					index = c("household_code", "month"), model = "within") 
+# trip.ls[[11]]	<- plm(trip_othdrug ~ after + treat + after*treat + month1, data = mydata, 
+# 					index = c("household_code", "month"), model = "within")
+# trip.ls[[12]]	<- plm(trip_othchannel ~ after + treat + after*treat + month1, data = mydata, 
+# 					index = c("household_code", "month"), model = "within")					
+# cls.se1		<- c(lapply(trip.ls[1:3], function(x) Cls.se.fn(x, cluster.vec = mydata[sel1,"household_code"], est.table = FALSE)$se), 
+# 				 lapply(trip.ls[4:6], function(x) Cls.se.fn(x, cluster.vec = mydata[sel2,"household_code"], est.table = FALSE)$se), 
+# 				 lapply(trip.ls[7:9], function(x) Cls.se.fn(x, cluster.vec = mydata[sel3,"household_code"], est.table = FALSE)$se), 
+# 				 lapply(trip.ls[10:12], function(x) Cls.se.fn(x, cluster.vec = mydata[,"household_code"], est.table = FALSE)$se) )	
+# 
+# stargazer(trip.ls, type = "html", align = TRUE, title = "Regressions of monthly trip incidence using non-smokers and SF and MA as control", 
+# 		keep = c("after", "treat"), se = cls.se1,
+# 		covariate.labels = c("After", "After*Treatment"),  
+# 		add.lines = list(c("Household",rep("FE", 12)), c("Month", rep(rep(c("", "FE"), each = 3), 2)), 
+# 						 c("Window", rep(rep(c("8 M.", "2 Yr"),each = 3), 2)), c("Distance", rep(c("< 2mi.", "Unrestricted"), each = 6)) ), 
+# 		no.space = TRUE, omit.stat = c("rsq", "adj.rsq", "f"), 
+# 		notes = "S.E. clustered over households", 
+# 		out = paste(plot.wd, "/tb_", out.file, "_trip_", Sys.Date(), ".html", sep=""))
+# 
+# # --------------------- #
+# # 2-way DID on spending # 
+# dol.ls	<- list(NULL)
+# dol.ls[[1]]	<- plm(dol_cvs ~ after + treat + after*treat , data = mydata[sel1,], 
+# 					index = c("household_code", "month"), model = "within") 
+# dol.ls[[2]]	<- plm(dol_othdrug ~ after + treat + after*treat , data = mydata[sel1,], 
+# 					index = c("household_code", "month"), model = "within")
+# dol.ls[[3]]	<- plm(dol_othchannel ~ after + treat + after*treat , data = mydata[sel1,], 
+# 					index = c("household_code", "month"), model = "within")
+# dol.ls[[4]]	<- plm(dol_cvs ~ after + treat + after*treat + month1, data = mydata[sel2,], 
+# 					index = c("household_code", "month"), model = "within") 
+# dol.ls[[5]]	<- plm(dol_othdrug ~ after + treat + after*treat + month1, data = mydata[sel2,], 
+# 					index = c("household_code", "month"), model = "within")
+# dol.ls[[6]]	<- plm(dol_othchannel ~ after + treat + after*treat + month1, data = mydata[sel2,], 
+# 					index = c("household_code", "month"), model = "within")
+# dol.ls[[7]]	<- plm(dol_cvs ~ after + treat + after*treat , data = mydata[sel3,], 
+# 					index = c("household_code", "month"), model = "within") 
+# dol.ls[[8]]	<- plm(dol_othdrug ~ after + treat + after*treat , data = mydata[sel3,], 
+# 					index = c("household_code", "month"), model = "within")
+# dol.ls[[9]]	<- plm(dol_othchannel ~ after + treat + after*treat , data = mydata[sel3,], 
+# 					index = c("household_code", "month"), model = "within")
+# dol.ls[[10]]	<- plm(dol_cvs ~ after + treat + after*treat + month1, data = mydata, 
+# 					index = c("household_code", "month"), model = "within") 
+# dol.ls[[11]]	<- plm(dol_othdrug ~ after + treat + after*treat + month1, data = mydata, 
+# 					index = c("household_code", "month"), model = "within")
+# dol.ls[[12]]	<- plm(dol_othchannel ~ after + treat + after*treat + month1, data = mydata, 
+# 					index = c("household_code", "month"), model = "within")
+# 
+# cls.se2		<- c(lapply(dol.ls[1:3], function(x) Cls.se.fn(x, cluster.vec = mydata[sel1,"household_code"], est.table = FALSE)$se), 
+# 				 lapply(dol.ls[4:6], function(x) Cls.se.fn(x, cluster.vec = mydata[sel2,"household_code"], est.table = FALSE)$se), 
+# 				 lapply(dol.ls[7:9], function(x) Cls.se.fn(x, cluster.vec = mydata[sel3,"household_code"], est.table = FALSE)$se), 
+# 				 lapply(dol.ls[10:12], function(x) Cls.se.fn(x, cluster.vec = mydata[,"household_code"], est.table = FALSE)$se) )	
+# 				
+# 
+# stargazer(dol.ls, type = "html", align = TRUE, title = "Regressions of monthly expenditure using non-smokers and SF and MA as control", 
+# 		keep = c("after", "treat"), se = cls.se2,
+# 		covariate.labels = c("After", "After*Treatment"),  
+# 		add.lines = list(c("Household",rep("FE", 12)), c("Month", rep(rep(c("", "FE"), each = 3), 2)), 
+# 						 c("Window", rep(rep(c("8 M.", "2 Yr"),each = 3), 2)), c("Distance", rep(c("< 2mi.", "Unrestricted"), each = 6)) ), 
+# 		no.space = TRUE, omit.stat = c("rsq", "adj.rsq", "f"), 
+# 		notes = "S.E. clustered over households", 
+# 		out = paste(plot.wd, "/tb_", out.file, "_dol", "_", Sys.Date(), ".html", sep=""))
+
+#############################		
+# Propensity score matching #		
+#############################
+my.ratio	<- 1
+match.mod	<- matchit(treat ~ income + age + have_kids + employment + race + 
+								pre_trip_cvs+pre_trip_othdrug+pre_trip_othchannel+pre_dol_cvs+pre_dol_othdrug+pre_dol_othchannel, 
+				method = "nearest", data = mypan[,c("household_code","treat",demo.col,bhv.col)], ratio = my.ratio)
+match.pan	<- match.data(match.mod)
+dim(match.pan)
+table(match.pan$treat)
+
+# Check propensity score
+ggtmp		<- data.frame(treat = factor(mypan$treat, levels = 0:1, labels = c("Non-smokers", "Smokers")), ps = match.mod$distance)
+ggplot(ggtmp, aes(ps)) + geom_histogram(aes(y = ..density..)) + facet_wrap(~treat) + 
+		labs(x = "Propensity score", title = "Histogram of propensity score")
+
+# Check demongraphic balance
+sel		<- sapply(demo.col, function(i) is.numeric(mypan[,i]))
+ggtab	<- NULL
+for(i in c(demo.col[sel], bhv.col)){
+	tmp		<- t.test(match.pan[,i] ~ match.pan$treat)
+	tmp1	<- c(tmp$estimate, dif = diff(tmp$estimate), tmp$statistic, p = tmp$p.value)
+	ggtab	<- rbind(ggtab, tmp1)
+}
+rownames(ggtab)	<- c(demo.col[sel], bhv.col)
+colnames(ggtab)	<- c("Non-smokers", "Smokers", "Difference", "t stat", "P value")
+
+ggtab1		<- NULL
+for(i in demo.col[!sel]){
+	tmp		<- table(match.pan[,i], match.pan$treat)
+	tmp1	<- chisq.test(tmp)
+	tmp 	<- apply(tmp, 2, function(x) x/sum(x))
+	tmp1	<- rbind(cbind(tmp, tmp[,2]-tmp[,1], NA, NA), c(NA, NA, NA, tmp1$statistic, p = tmp1$p.value))
+	ggtab1	<- rbind(ggtab1, tmp1)
+}
+colnames(ggtab1)	<- c("Non-smokers", "Smokers", "Difference", "t stat", "P value")
+cat("Recheck demographic balance after matching:\n"); print(rbind(ggtab, ggtab1)); cat("\n")
+
+# #----------------#
+# Check the trend of the matched sample
+# Shopping trips per week per person #
+ggtmp	<- data.table(subset(trips, !week %in% endweek & household_code %in% match.pan$household_code))
+ggtmp	<- ggtmp[,list(	Total = length(purchase_date)/length(unique(household_code)), 
+						CVS = length(purchase_date[cvs==1])/length(unique(household_code)), 
+						OtherDrug = length(purchase_date[cvs==0 & channel_type == "Drug Store"])/length(unique(household_code)),
+						OtherChannel = length(purchase_date[cvs==0 & channel_type != "Drug Store"])/length(unique(household_code)) 
+						), 
+				by = list(smk, week)]
+ggtmp	<- melt(ggtmp, id.vars = c("smk", "week"))		
+ggtmp$smk	<- factor(ggtmp$smk, levels = c(1,0), labels = c("Smoker", "Non-smoker"))
+p1 		<- ggplot(ggtmp, aes(week, value, linetype = smk)) + geom_line() + 
+			geom_vline(xintercept = as.numeric(event.date), col = "red") + 
+			facet_wrap(~variable, scales = "free") + 
+			theme(legend.position = "bottom") + 
+			labs(y = "Trips per person", title = "Shopping trips by consumer groups")
+
+# Expenditure 
+ggtmp	<- data.table(subset(trips, !week %in% endweek & household_code %in% match.pan$household_code))
+ggtmp	<- ggtmp[,list(	Total = sum(total_spent)/length(unique(household_code)), 
+						CVS = sum(total_spent[cvs==1])/length(unique(household_code)), 
+						OtherDrug = sum(total_spent[cvs==0 & channel_type == "Drug Store"])/length(unique(household_code)),
+						OtherChannel = sum(total_spent[cvs==0 & channel_type != "Drug Store"])/length(unique(household_code))
+						), 
+				by = list(smk, week)]
+ggtmp	<- melt(ggtmp, id.vars = c("smk", "week"))		
+ggtmp$smk	<- factor(ggtmp$smk, levels = c(1,0), labels = c("Smoker", "Non-smoker"))
+p2		<- ggplot(ggtmp, aes(week, value, linetype = smk)) + geom_line() + 
+			geom_vline(xintercept = as.numeric(event.date), col = "red") + 
+			facet_wrap(~variable, scales = "free") + 
+			theme(legend.position = "bottom") + 
+			labs(y = "Expenditure per person", title = "Expenditure by consumer groups")
+
+pdf(paste(plot.wd,"/fg_",out.file, "_pmatch_trend_", Sys.Date(), ".pdf", sep=""), width = 7.5, height = 7.5*ar)			
+print(p1)
+print(p2)
+dev.off()
+
+
+# Run DID regressions 
+mydata.match	<- subset(mydata, household_code %in% match.pan$household_code)
+dim(mydata.match)
+sel1		<- mydata.match$month >= event.month - 4 & mydata.match$month <= event.month + 3 & mydata.match$cvs_in2 == 1
+sel2		<- mydata.match$cvs_in2 == 1
+sel3		<- mydata.match$month >= event.month - 4 & mydata.match$month <= event.month + 3						# Small window
 
 # ------------------------#
 # Shopping trip incidence # 
-trip.ls	<- list(NULL)
-trip.ls[[1]]	<- plm(trip_cvs ~ after + cvs_in2 + after*cvs_in2 , data = mydata1, 
+trip.ls1	<- list(NULL)
+trip.ls1[[1]]	<- plm(trip_cvs ~ after + treat + after*treat, data = mydata.match[sel1,], 
 					index = c("household_code", "month"), model = "within") 
-trip.ls[[2]]	<- plm(trip_othdrug ~ after + cvs_in2 + after*cvs_in2 , data = mydata1, 
+trip.ls1[[2]]	<- plm(trip_othdrug ~ after + treat + after*treat , data = mydata.match[sel1,], 
 					index = c("household_code", "month"), model = "within")
-trip.ls[[3]]	<- plm(trip_othchannel ~ after + cvs_in2 + after*cvs_in2 , data = mydata1, 
+trip.ls1[[3]]	<- plm(trip_othchannel ~ after + treat + after*treat , data = mydata.match[sel1,], 
 					index = c("household_code", "month"), model = "within")
-trip.ls[[4]]	<- plm(trip_cvs ~ after + smk + after*smk , data = mydata2, 
+trip.ls1[[4]]	<- plm(trip_cvs ~ after + treat + after*treat + month1, data = mydata.match[sel2,], 
 					index = c("household_code", "month"), model = "within") 
-trip.ls[[5]]	<- plm(trip_othdrug ~ after + smk + after*smk , data = mydata2, 
+trip.ls1[[5]]	<- plm(trip_othdrug ~ after + treat + after*treat + month1, data = mydata.match[sel2,], 
 					index = c("household_code", "month"), model = "within")
-trip.ls[[6]]	<- plm(trip_othchannel ~ after + smk + after*smk , data = mydata2, 
+trip.ls1[[6]]	<- plm(trip_othchannel ~ after + treat + after*treat + month1, data = mydata.match[sel2,], 
 					index = c("household_code", "month"), model = "within")
-cls.se2		<- c(lapply(trip.ls[1:3], function(x) Cls.se.fn(x, cluster.vec = mydata1$household_code, est.table = FALSE)$se), 
-				 lapply(trip.ls[4:6], function(x) Cls.se.fn(x, cluster.vec = mydata2$household_code, est.table = FALSE)$se) )	
+trip.ls1[[7]]	<- plm(trip_cvs ~ after + treat + after*treat, data = mydata.match[sel3,], 
+					index = c("household_code", "month"), model = "within") 
+trip.ls1[[8]]	<- plm(trip_othdrug ~ after + treat + after*treat , data = mydata.match[sel3,], 
+					index = c("household_code", "month"), model = "within")
+trip.ls1[[9]]	<- plm(trip_othchannel ~ after + treat + after*treat , data = mydata.match[sel3,], 
+					index = c("household_code", "month"), model = "within")
+trip.ls1[[10]]	<- plm(trip_cvs ~ after + treat + after*treat + month1, data = mydata.match, 
+					index = c("household_code", "month"), model = "within") 
+trip.ls1[[11]]	<- plm(trip_othdrug ~ after + treat + after*treat + month1, data = mydata.match, 
+					index = c("household_code", "month"), model = "within")
+trip.ls1[[12]]	<- plm(trip_othchannel ~ after + treat + after*treat + month1, data = mydata.match, 
+					index = c("household_code", "month"), model = "within")
 
-stargazer(trip.ls, type = "html", align = TRUE, title = "DID regressions of monthly trip incidence", 
-		keep = c("after", "cvs_in2"), se = cls.se2,
-		covariate.labels = c("After", "After*CloseDist", "After*Smoker"),  
-		add.lines = list(c("Household",rep("FE", 9))), 
+cls.se3		<- c(lapply(trip.ls1[1:3], function(x) Cls.se.fn(x, cluster.vec = mydata.match[sel1,"household_code"], est.table = FALSE)$se), 
+				 lapply(trip.ls1[4:6], function(x) Cls.se.fn(x, cluster.vec = mydata.match[sel2,"household_code"], est.table = FALSE)$se), 
+				 lapply(trip.ls1[7:9], function(x) Cls.se.fn(x, cluster.vec = mydata.match[sel3,"household_code"], est.table = FALSE)$se), 
+				 lapply(trip.ls1[10:12], function(x) Cls.se.fn(x, cluster.vec = mydata.match[,"household_code"], est.table = FALSE)$se) )	
+
+stargazer(trip.ls1, type = "html", align = TRUE, title = "Regressions of monthly trip incidence on matched sample using non-smokers and SF and MA as control", 
+		keep = c("after", "treat"), se = cls.se3,
+		covariate.labels = c("After", "After*Treatment"),  
+		add.lines = list(c("Household",rep("FE", 12)), c("Month", rep(rep(c("", "FE"), each = 3), 2)), 
+						 c("Window", rep(rep(c("8 M.", "2 Yr"),each = 3), 2)), c("Distance", rep(c("< 2mi.", "Unrestricted"), each = 6)) ), 
 		no.space = TRUE, omit.stat = c("rsq", "adj.rsq", "f"), 
 		notes = "S.E. clustered over households", 
-		out = paste(plot.wd, "/tb_", out.file, "_trip_", Sys.Date(), ".html", sep=""))
+		out = paste(plot.wd, "/tb_", out.file, "_pmatch_trip_", Sys.Date(), ".html", sep=""))
 
 # --------------------- #
 # 2-way DID on spending # 
-dol.ls	<- list(NULL)
-dol.ls[[1]]	<- plm(dol_cvs ~ after + cvs_in2 + after*cvs_in2 , data = mydata1, 
+dol.ls1	<- list(NULL)
+dol.ls1[[1]]	<- plm(dol_cvs ~ after + treat + after*treat , data = mydata.match[sel1,], 
 					index = c("household_code", "month"), model = "within") 
-dol.ls[[2]]	<- plm(dol_othdrug ~ after + cvs_in2 + after*cvs_in2 , data = mydata1, 
+dol.ls1[[2]]	<- plm(dol_othdrug ~ after + treat + after*treat , data = mydata.match[sel1,], 
 					index = c("household_code", "month"), model = "within")
-dol.ls[[3]]	<- plm(dol_othchannel ~ after + cvs_in2 + after*cvs_in2 , data = mydata1, 
+dol.ls1[[3]]	<- plm(dol_othchannel ~ after + treat + after*treat , data = mydata.match[sel1,], 
 					index = c("household_code", "month"), model = "within")
-dol.ls[[4]]	<- plm(dol_cvs ~ after + smk + after*smk , data = mydata2, 
+dol.ls1[[4]]	<- plm(dol_cvs ~ after + treat + after*treat + month1, data = mydata.match[sel2,], 
 					index = c("household_code", "month"), model = "within") 
-dol.ls[[5]]	<- plm(dol_othdrug ~ after + smk + after*smk , data = mydata2, 
+dol.ls1[[5]]	<- plm(dol_othdrug ~ after + treat + after*treat + month1, data = mydata.match[sel2,], 
 					index = c("household_code", "month"), model = "within")
-dol.ls[[6]]	<- plm(dol_othchannel ~ after + smk + after*smk , data = mydata2, 
+dol.ls1[[6]]	<- plm(dol_othchannel ~ after + treat + after*treat + month1, data = mydata.match[sel2,], 
 					index = c("household_code", "month"), model = "within")
-cls.se3		<- c(lapply(dol.ls[1:3], function(x) Cls.se.fn(x, cluster.vec = mydata1$household_code, est.table = FALSE)$se), 
-				 lapply(dol.ls[4:6], function(x) Cls.se.fn(x, cluster.vec = mydata2$household_code, est.table = FALSE)$se) )	
+dol.ls1[[7]]	<- plm(dol_cvs ~ after + treat + after*treat , data = mydata.match[sel3,], 
+					index = c("household_code", "month"), model = "within") 
+dol.ls1[[8]]	<- plm(dol_othdrug ~ after + treat + after*treat , data = mydata.match[sel3,], 
+					index = c("household_code", "month"), model = "within")
+dol.ls1[[9]]	<- plm(dol_othchannel ~ after + treat + after*treat , data = mydata.match[sel3,], 
+					index = c("household_code", "month"), model = "within")
+dol.ls1[[10]]	<- plm(dol_cvs ~ after + treat + after*treat + month1, data = mydata.match, 
+					index = c("household_code", "month"), model = "within") 
+dol.ls1[[11]]	<- plm(dol_othdrug ~ after + treat + after*treat + month1, data = mydata.match, 
+					index = c("household_code", "month"), model = "within")
+dol.ls1[[12]]	<- plm(dol_othchannel ~ after + treat + after*treat + month1, data = mydata.match, 
+					index = c("household_code", "month"), model = "within")
+cls.se4		<- c(lapply(dol.ls1[1:3], function(x) Cls.se.fn(x, cluster.vec = mydata.match[sel1,"household_code"], est.table = FALSE)$se), 
+				 lapply(dol.ls1[4:6], function(x) Cls.se.fn(x, cluster.vec = mydata.match[sel2,"household_code"], est.table = FALSE)$se),
+				 lapply(dol.ls1[7:9], function(x) Cls.se.fn(x, cluster.vec = mydata.match[sel3,"household_code"], est.table = FALSE)$se), 
+				 lapply(dol.ls1[10:12], function(x) Cls.se.fn(x, cluster.vec = mydata.match[,"household_code"], est.table = FALSE)$se) )	
 
-stargazer(dol.ls, type = "html", align = TRUE, title = "DID regressions of monthly expenditure", 
-		keep = c("after", "cvs_in2"), se = cls.se3,
-		covariate.labels = c("After", "After*CloseDist", "After*Smoker"),  
-		add.lines = list(c("Household",rep("FE", 9))), 
+stargazer(dol.ls1, type = "html", align = TRUE, title = "Regressions of monthly expenditure on the matched sample using non-smokers and SF and MA as control", 
+		keep = c("after", "treat"), se = cls.se4,
+		covariate.labels = c("After", "After*Treatment"),  
+		add.lines = list(c("Household",rep("FE", 12)), c("Month", rep(rep(c("", "FE"), each = 3), 2)), 
+						 c("Window", rep(rep(c("8 M.", "2 Yr"),each = 3), 2)), c("Distance", rep(c("< 2mi.", "Unrestricted"), each = 6)) ), 
 		no.space = TRUE, omit.stat = c("rsq", "adj.rsq", "f"), 
 		notes = "S.E. clustered over households", 
-		out = paste(plot.wd, "/tb_", out.file, "_dol", "_", Sys.Date(), ".html", sep=""))
+		out = paste(plot.wd, "/tb_", out.file, "_pmatch_dol", "_", Sys.Date(), ".html", sep=""))		
+
+# Look into expenditure at different channels
+dol.ls2	<- list(NULL)
+dol.ls2[[1]]	<- plm(dol_total ~ after + treat + after*treat , data = mydata.match[sel1,], 
+					index = c("household_code", "month"), model = "within") 
+dol.ls2[[2]]	<- plm(dol_grocery ~ after + treat + after*treat , data = mydata.match[sel1,], 
+					index = c("household_code", "month"), model = "within")
+dol.ls2[[3]]	<- plm(dol_discount ~ after + treat + after*treat , data = mydata.match[sel1,], 
+					index = c("household_code", "month"), model = "within")
+dol.ls2[[4]]	<- plm(dol_total ~ after + treat + after*treat + month1, data = mydata.match[sel2,], 
+					index = c("household_code", "month"), model = "within") 
+dol.ls2[[5]]	<- plm(dol_grocery ~ after + treat + after*treat + month1, data = mydata.match[sel2,], 
+					index = c("household_code", "month"), model = "within")
+dol.ls2[[6]]	<- plm(dol_discount ~ after + treat + after*treat + month1, data = mydata.match[sel2,], 
+					index = c("household_code", "month"), model = "within")
+dol.ls2[[7]]	<- plm(dol_total ~ after + treat + after*treat , data = mydata.match[sel3,], 
+					index = c("household_code", "month"), model = "within") 
+dol.ls2[[8]]	<- plm(dol_grocery ~ after + treat + after*treat , data = mydata.match[sel3,], 
+					index = c("household_code", "month"), model = "within")
+dol.ls2[[9]]	<- plm(dol_discount ~ after + treat + after*treat , data = mydata.match[sel3,], 
+					index = c("household_code", "month"), model = "within")
+dol.ls2[[10]]	<- plm(dol_total ~ after + treat + after*treat + month1, data = mydata.match, 
+					index = c("household_code", "month"), model = "within") 
+dol.ls2[[11]]	<- plm(dol_grocery ~ after + treat + after*treat + month1, data = mydata.match, 
+					index = c("household_code", "month"), model = "within")
+dol.ls2[[12]]	<- plm(dol_discount ~ after + treat + after*treat + month1, data = mydata.match, 
+					index = c("household_code", "month"), model = "within")
+cls.se4		<- c(lapply(dol.ls2[1:3], function(x) Cls.se.fn(x, cluster.vec = mydata.match[sel1,"household_code"], est.table = FALSE)$se), 
+				 lapply(dol.ls2[4:6], function(x) Cls.se.fn(x, cluster.vec = mydata.match[sel2,"household_code"], est.table = FALSE)$se),
+				 lapply(dol.ls2[7:9], function(x) Cls.se.fn(x, cluster.vec = mydata.match[sel3,"household_code"], est.table = FALSE)$se), 
+				 lapply(dol.ls2[10:12], function(x) Cls.se.fn(x, cluster.vec = mydata.match[,"household_code"], est.table = FALSE)$se) )	
+
+stargazer(dol.ls2, type = "html", align = TRUE, title = "Regressions of monthly expenditure on the matched sample using non-smokers and SF and MA as control", 
+		keep = c("after", "treat"), se = cls.se4,
+		covariate.labels = c("After", "After*Treatment"),  
+		add.lines = list(c("Household",rep("FE", 12)), c("Month", rep(rep(c("", "FE"), each = 3), 2)), 
+						 c("Window", rep(rep(c("8 M.", "2 Yr"),each = 3), 2)), c("Distance", rep(c("< 2mi.", "Unrestricted"), each = 6)) ), 
+		no.space = TRUE, omit.stat = c("rsq", "adj.rsq", "f"), 
+		notes = "S.E. clustered over households", 
+		out = paste(plot.wd, "/tb_", out.file, "_pmatch_dolsep", "_", Sys.Date(), ".html", sep=""))
+
+# Examine expenditure net cigarette spending
+dol.ls3	<- list(NULL)
+dol.ls3[[1]]	<- plm(netdol_cvs ~ after + treat + after*treat , data = mydata.match[sel1,], 
+					index = c("household_code", "month"), model = "within") 
+dol.ls3[[2]]	<- plm(netdol_othdrug ~ after + treat + after*treat , data = mydata.match[sel1,], 
+					index = c("household_code", "month"), model = "within")
+dol.ls3[[3]]	<- plm(netdol_othchannel ~ after + treat + after*treat , data = mydata.match[sel1,], 
+					index = c("household_code", "month"), model = "within")
+dol.ls3[[4]]	<- plm(netdol_cvs ~ after + treat + after*treat + month1, data = mydata.match[sel2,], 
+					index = c("household_code", "month"), model = "within") 
+dol.ls3[[5]]	<- plm(netdol_othdrug ~ after + treat + after*treat + month1, data = mydata.match[sel2,], 
+					index = c("household_code", "month"), model = "within")
+dol.ls3[[6]]	<- plm(netdol_othchannel ~ after + treat + after*treat + month1, data = mydata.match[sel2,], 
+					index = c("household_code", "month"), model = "within")
+dol.ls3[[7]]	<- plm(netdol_cvs ~ after + treat + after*treat , data = mydata.match[sel3,], 
+					index = c("household_code", "month"), model = "within") 
+dol.ls3[[8]]	<- plm(netdol_othdrug ~ after + treat + after*treat , data = mydata.match[sel3,], 
+					index = c("household_code", "month"), model = "within")
+dol.ls3[[9]]	<- plm(netdol_othchannel ~ after + treat + after*treat , data = mydata.match[sel3,], 
+					index = c("household_code", "month"), model = "within")
+dol.ls3[[10]]	<- plm(netdol_cvs ~ after + treat + after*treat + month1, data = mydata.match, 
+					index = c("household_code", "month"), model = "within") 
+dol.ls3[[11]]	<- plm(netdol_othdrug ~ after + treat + after*treat + month1, data = mydata.match, 
+					index = c("household_code", "month"), model = "within")
+dol.ls3[[12]]	<- plm(netdol_othchannel ~ after + treat + after*treat + month1, data = mydata.match, 
+					index = c("household_code", "month"), model = "within")
+cls.se5		<- c(lapply(dol.ls3[1:3], function(x) Cls.se.fn(x, cluster.vec = mydata.match[sel1,"household_code"], est.table = FALSE)$se), 
+				 lapply(dol.ls3[4:6], function(x) Cls.se.fn(x, cluster.vec = mydata.match[sel2,"household_code"], est.table = FALSE)$se),
+				 lapply(dol.ls3[7:9], function(x) Cls.se.fn(x, cluster.vec = mydata.match[sel3,"household_code"], est.table = FALSE)$se), 
+				 lapply(dol.ls3[10:12], function(x) Cls.se.fn(x, cluster.vec = mydata.match[,"household_code"], est.table = FALSE)$se) )	
+
+stargazer(dol.ls3, type = "html", align = TRUE, title = "Regressions of monthly expenditure on the matched sample using non-smokers and SF and MA as control", 
+		keep = c("after", "treat"), se = cls.se5,
+		covariate.labels = c("After", "After*Treatment"),  
+		add.lines = list(c("Household",rep("FE", 12)), c("Month", rep(rep(c("", "FE"), each = 3), 2)), 
+						 c("Window", rep(rep(c("8 M.", "2 Yr"),each = 3), 2)), c("Distance", rep(c("< 2mi.", "Unrestricted"), each = 6)) ), 
+		no.space = TRUE, omit.stat = c("rsq", "adj.rsq", "f"), 
+		notes = "S.E. clustered over households", 
+		out = paste(plot.wd, "/tb_", out.file, "_pmatch_netdol", "_", Sys.Date(), ".html", sep=""))		
+
 
 save.image(file = paste(plot.wd, "/", out.file, "_", Sys.Date(),".rdata", sep=""))			
 

@@ -157,14 +157,16 @@ proc sql noprint;
 	
 	* Extract non-smokers; 
 	create table nonsmkers as 
-	select household_code
-	from tmp3 
-	where n < 5; 
+	select distinct household_code
+	from tmp1
+	where household_code not in (select household_code from tmp3) and n = 2; 
 quit; 
 proc sql; 
 	select sum(n=2)/count(*) as pct_hh from tmp1; 
 	select mean(n) as mean_purchases from tmp2; 
 	select sum(n>=5)/count(*) as pct_sel from tmp3; 
+	select count(unique(household_code)) from nonsmkers; 
+	select count(unique(household_code)) from keephh;
 quit; 
 proc datasets noprint; delete tmp1 tmp2 tmp3; run;
 
@@ -305,13 +307,20 @@ run;
 proc means data = dist; var distance distance_wgr; run;
 
 proc sql noprint; 
-	create table sub_pan as 
+	create table tmp as 
 	select A.household_code, A.panel_year, panelist_zip_code, distance, distance_wgr, scantrack_market_descr, 
 		household_income, household_size, male_head_age, male_head_employment, female_head_age, female_head_employment, 
 		age_and_presence_of_children, race, projection_factor
 	from sub_panelists as A 
 	left join dist as B
 	on A.household_code = B.household_code and A.panel_year = B.panel_year
+	order by household_code, panel_year; 
+	
+	* Append county; 
+	create table sub_pan as 
+	select A.*, B.city, B.countynm, B.statecode
+	from tmp as A left join sashelp.zipcode as B
+	on A.panelist_zip_code = B.zip
 	order by household_code, panel_year; 
 quit; 
 
@@ -468,8 +477,14 @@ proc sql noprint;
 	order by household_code, panel_year; 
 	
 	drop table sub_nonsmkers; 
+	
+	* Append county; 
+	create table sub_nonsmkers as
+	select A.*, B.city, B.countynm, B.statecode
+	from tmp as A left join sashelp.zipcode as B
+	on A.panelist_zip_code = B.zip
+	order by household_code, panel_year;
 quit; 
-proc datasets noprint; change tmp = sub_nonsmkers; run;
 
 proc contents data = sub_nonsmkers; run;
 proc contents data = sub_trips_nonsmkers; run;

@@ -6,6 +6,7 @@ library(stargazer)
 library(zipcode)
 library(plm)
 library(lme4)
+library(xlsx)
 
 # setwd("~/Documents/Research/Tobacco/processed_data")
 # plot.wd		<- "~/Desktop"
@@ -20,6 +21,8 @@ ar			<- .6
 panelists 	<- read.csv("tob_CVS_pan.csv", header = T)
 purchases	<- read.csv("tob_CVS_purchases.csv", header = T)
 trips		<- read.csv("tob_CVS_trips.csv", header = T)
+ma.policy	<- read.xlsx("MA_policy.xlsx", 1)
+names(panelists)	<- tolower(names(panelists))
 
 # # Select a random sample
 # sel		<- sample(unique(panelists$household_code), .1*length(unique(panelists$household_code)))
@@ -71,6 +74,14 @@ endweek				<- c(min(purchases$week), max(purchases$week))
 trips$cvs	<- ifelse(trips$retailer_code == cvs.ret, 1, 0)
 purchases	<- merge(purchases, trips[,c("trip_code_uc", "cvs", "channel_type")], by = "trip_code_uc", all.x=T)
 
+# Mark the places that already implement tobacco ban
+ma.policy$countynm	<- paste(toupper(substring(ma.policy$COUNTY, 1, 1)), tolower(substring(ma.policy$COUNTY, 2)), sep = "")
+sort(unique(panelists[panelists$statecode == "MA","countynm"]))
+cnty		<- c("Berkeley","Daly City","Healdsburg","Hollister","Marin","Richmond","San Francisco","Santa Clara", "Sonoma" )
+panelists$ban_ard	<- with(panelists, 1*((statecode=="MA" & countynm %in% ma.policy$countynm)| (statecode=="CA" & countynm %in% cnty)))
+sort(unique(panelists[panelists$ban_ard==1,"countynm"]))
+table(panelists$ban_ard)
+
 # Classify households distance to CVS
 tmp	<- data.table(panelists)
 tmp	<- tmp[,list(nzip = length(unique(panelist_zip_code)), nd = length(unique(distance))), by = list(household_code)]
@@ -116,15 +127,20 @@ summary(mydata[,-c(1:3), with = FALSE])
 
 # Create other control variables: city and month 
 mydata$year		<- year(mydata$purchase_date)
-mydata			<- merge(mydata, mypan[,c("household_code", "panelist_zip_code","distance", "cvs_in2", "wgr_in2", "heavy")], 
+mydata			<- merge(mydata, mypan[,c("household_code", "panelist_zip_code","distance", "cvs_in2", "wgr_in2", "heavy", "ban_ard")], 
 						by = "household_code", all.x=T)
 mydata			<- data.frame(mydata)
 dim(mydata)
-mydata$panelist_zip_code	<- clean.zipcodes(mydata$panelist_zip_code)
-data(zipcode)
-mydata			<- merge(mydata, zipcode[,c("zip","city","state")], by.x = "panelist_zip_code", by.y = "zip")
-mydata$scity	<- with(mydata, paste(state, city, sep="-"))
+mydata$treat	<- with(mydata, 1*(cvs_in2 == 1 | ban_ard == 0))
 mydata$after	<- 1*(mydata$purchase_date >= event.date)
+
+# Distribution of packs 
+ggtmp	<- subset(mydata, purchase_date >= event.date - 4*30 & purchase_date <= event.date + 4*30)
+ggtmp$cvs_in2	<- factor(ggtmp$cvs_in2, levels = 1:0, labels = c("Less than 2 mi.", "Greater than 2 mi."))
+ggtmp$after		<- factor(ggtmp$after, levels = 0:1, labels = c("Before", "After"))
+ggplot(ggtmp, aes(q, fill = after, alpha = .5)) + geom_histogram(aes(y = ..density..), position = "identity") + 
+		facet_wrap(~ cvs_in2) + 
+		xlim(c(0, 20))
 
 ##################################
 # DID regression of small window # 
