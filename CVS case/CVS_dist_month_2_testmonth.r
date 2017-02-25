@@ -147,7 +147,8 @@ dim(mydata)
 
 # Trips and spending 
 tmp1 	<- data.table(trips)
-tmp1	<- tmp1[,list(	trip_cvs 		= 1*(sum(cvs)>0), 
+tmp1	<- tmp1[,list(total_spent = sum(total_spent)), by = list(household_code, month, purchase_date, channel_type, retailer_code, cvs)]
+tmp1	<- tmp1[,list(	trip_cvs 		= length(purchase_date[cvs==1]), 
 						trip_othdrug 	= sum(channel_type == "Drug Store" & cvs ==0 ), 
 						trip_othchannel = sum(channel_type != "Drug Store"), 
 						dol_cvs 		= sum(total_spent*cvs, na.rm = T), 

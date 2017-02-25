@@ -14,12 +14,17 @@ PROC IMPORT OUT= WORK.hms_retailers
      		DATAROW=2; 
 			GUESSINGROWS=5000;
 RUN;
-proc sql noprint;
-	create table hms_drugstore as 
-	select *
-	from hms_retailers
-	where channel_type = "Drug Store"; 
-quit; 
+proc freq data = hms_retailers; table channel_type; run;
+
+* Restrict to a set of channels; 
+data my_retailers; 
+	set hms_retailers; 
+	where compress(channel_type, ,'s') in 
+	("Grocery"  "DiscountStore" "DrugStore"  "WarehouseClub"  "DollarStore"  "ConvenienceStore"  
+	"ServiceStation" "AllOtherStores"  "GasMiniMart" "TobaccoStore" "HealthFoodStore"); 
+	channel_type1 = '*'||strip(channel_type)||'*'; 
+run;
+proc freq data = my_retailers; table channel_type1; run;
 
 * Read master product data;
 %let fpath = &dirname\Master_Files\Latest\products.tsv;
@@ -97,13 +102,21 @@ quit;
 %mend read_groc_fun;
 %read_groc_fun;
 
+* Subset trips and purchases to certain channels; 
 * Merge hosuehold and purchase data to purchase data; 
 proc sql noprint; 
+	create table tmp_trips as 
+	select A.*, channel_type
+	from trips as A 
+	inner join 
+ 	my_retailers as B
+	on A.retailer_code = B.retailer_code; 
+
 	create table tmp as 
 	select household_code, purchase_date, A.*
 	from (select * from purchases where upc in (select upc from hms_products)) as A
-	left join 
-	trips as B
+	inner join 
+	tmp_trips as B
 	on A.trip_code_uc = B.trip_code_uc 
 	order by household_code, purchase_date; 
 	
@@ -114,10 +127,11 @@ proc sql noprint;
 	left join hms_products as B
 	on A.upc = B.upc and A.upc_ver_uc = B.upc_ver_uc; 
 		
-	drop table tmp;
+	drop table tmp, trips;
 quit; 
 
 proc sql; select nmiss(size)/count(*) from cig_purchases; quit; 
+proc datasets noprint; change tmp_trips = trips; run;
 
 ***********************;
 * Household selection *; 
@@ -187,19 +201,17 @@ run;
 
 proc univariate data = tmp; var gap; run;
 
-* Subset data; 
+* Subset data: subset the trips and purchases to the selected houseolds; 
 proc sql noprint;
 	create table sub_panelists as 
 	select *
 	from panelists
 	where household_code in (select household_code from keephh); 
 	
+	* Subset trip data; 
 	create table sub_trips as 
-	select A.*, channel_type
-	from (select * from trips 
-		where household_code in (select household_code from keephh)) as A 
-	left join hms_retailers as B
-	on A.retailer_code = B.retailer_code
+	select *
+	from trips where household_code in (select household_code from keephh) 
 	order by household_code, purchase_date;  
 	
 	create table subcig_purchases as 
@@ -208,81 +220,77 @@ proc sql noprint;
 	order by household_code, purchase_date; 
 quit; 
 	
-* Add distance to the panelist data; 
-PROC IMPORT OUT= location
+* ----------------------------------*; 	
+* Add distance to the panelist data *; 
+PROC IMPORT OUT= location_cvs
     DATAFILE= "U:\Users\ccv103\Documents\Research\Store switching\store_data\cvs.csv" 
     DBMS=csv REPLACE;
    	GETNAMES=YES; 
 	GUESSINGROWS=5000;
 RUN;
 
-* Merge latitude and longitude; 
-proc sql noprint;
-	create table tmp1 as 
-	select A.*, substr(put(panelist_zip_code, z5.), 1, 3) as zip3, B.Y as hh_latitude, B.X as hh_longitude, COUNTY
-	from sub_panelists as A
-	left join SASHELP.zipcode as B
-	on A.panelist_zip_code = B.zip; 
-	
-	create table tmp as 
-	select household_code, panel_year, panelist_zip_code, hh_latitude, hh_longitude, A.county, B.latitude, B.longitude, B.zip_code as store_zip
-	from tmp1 as A
-	left join 
-	(select C.*, substr(put(zip_code, z5.), 1, 3) as zip3, D.county from location(drop=county) as C
-	left join SASHELP.zipcode as D
-	on C.zip_code = D.zip)  as B	
-	on A.county = B.county;
-quit; 
-
-%let pi180=0.0174532925199433;
-data tmp;
-	set tmp;
-	if latitude ^=. and hh_latitude ^=. then do; 
-		a = sin((hh_latitude*&pi180-latitude*&pi180)/2)**2 + 
-			cos(latitude*&pi180)*cos(hh_latitude*&pi180)*sin((longitude*&pi180-hh_longitude*&pi180)/2)**2;
-		b =  2*atan2(sqrt(a), sqrt(1-a));
-		distance = 3959*b; 
-	end; 
-	drop a b;
-run; 
-
-proc sql noprint;
-	create table dist as 
-	select household_code, panel_year, min(distance) as distance
-	from tmp
-	group by household_code, panel_year
-	order by household_code, panel_year;
-quit; 
-
 * Get the distance to Walgreens; 
-PROC IMPORT OUT= location
+PROC IMPORT OUT= location_wgr
     DATAFILE= "U:\Users\ccv103\Documents\Research\Store switching\store_data\walgreens.csv" 
     DBMS=csv REPLACE;
    	GETNAMES=YES; 
 	GUESSINGROWS=5000;
 RUN;
+data location_cvs;	length retailer $10.; set location_cvs; retailer = "CVS"; 
+data location_wgr; 	length retailer $10.;set location_wgr; retailer = "Walgreens"; run;
+proc contents data = location_cvs; 
+proc contents data = location_wgr; run;
+
+data location; 
+	set location_cvs(keep = retailer store_number zip_code city state latitude longitude county)
+		location_wgr(keep = retailer store_number zip_code city state latitude longitude county); 
+run;
+proc datasets noprint; delete location_cvs location_wgr; run;
 
 * Merge latitude and longitude; 
 proc sql noprint;
-	create table tmp1 as 
-	select A.*, substr(put(panelist_zip_code, z5.), 1, 3) as zip3, B.Y as hh_latitude, B.X as hh_longitude, COUNTY
-	from sub_panelists as A
+	create table tmp as 
+	select panelist_zip_code, substr(put(panelist_zip_code, z5.), 1, 3) as hh_zip3, B.Y as hh_latitude, B.X as hh_longitude, COUNTY as hh_county
+	from (select distinct panelist_zip_code from sub_panelists) as A
 	left join SASHELP.zipcode as B
 	on A.panelist_zip_code = B.zip; 
 	
-	create table tmp as 
-	select household_code, panel_year, panelist_zip_code, hh_latitude, hh_longitude, A.county, B.latitude, B.longitude, B.zip_code as store_zip
-	from tmp1 as A
+	create table tmp1 as 
+	select panelist_zip_code, hh_latitude, hh_longitude, hh_zip3, hh_county, B.retailer, B.latitude, B.longitude, B.zip_code as store_zip
+	from tmp as A
 	left join 
-	(select C.*, substr(put(zip_code, z5.), 1, 3) as zip3, D.county from location(drop=county) as C
+	(select C.*, substr(put(zip_code, z5.), 1, 3) as zip3, county as store_county
+	from location(drop=county) as C
 	left join SASHELP.zipcode as D
 	on C.zip_code = D.zip)  as B	
-	on A.county = B.county;
+	on A.hh_county = B.store_county;
+	
+* Check if a unique household zip code has all the candidate stores; 
+	create table tmp2 as 
+	select *, ifn(count(unique(retailer))<2, 1, 0) as id
+	from tmp1 
+	group by panelist_zip_code; 
+
+* For the zipcode that did not have a store match in the county, merge all the stores for those zip codes; 	
+	create table tmp3 as 
+	select A.*, B.retailer, B.latitude, B.longitude, B.zip_code as store_zip
+	from (select distinct id, panelist_zip_code, hh_longitude, hh_latitude, hh_county, hh_zip3
+		from tmp2 where id = 1) as A
+	full join (select *, 1 as fullid from location ) as B
+	on A.id = B.fullid
+	order by panelist_zip_code; 
 quit; 
 
+data allzip; 
+	set tmp2(where = (id = 0)) tmp3; 
+	drop id; 
+proc sort; by panelist_zip_code; 	
+run;
+proc datasets noprint; delete tmp tmp1 tmp2 tmp3; run;
+
 %let pi180=0.0174532925199433;
-data tmp;
-	set tmp;
+data allzip;
+	set allzip;
 	if latitude ^=. and hh_latitude ^=. then do; 
 		a = sin((hh_latitude*&pi180-latitude*&pi180)/2)**2 + 
 			cos(latitude*&pi180)*cos(hh_latitude*&pi180)*sin((longitude*&pi180-hh_longitude*&pi180)/2)**2;
@@ -293,22 +301,28 @@ data tmp;
 run; 
 
 proc sql noprint;
-	create table dist1 as 
-	select household_code, panel_year, min(distance) as distance_wgr
-	from tmp
-	group by household_code, panel_year
-	order by household_code, panel_year;
+	create table tmp as 
+	select A.household_code, A.panel_year, A.panelist_zip_code, retailer, distance
+	from sub_panelists as A
+	left join 
+	(select panelist_zip_code, retailer, min(distance) as distance from allzip 
+		group by panelist_zip_code, retailer) as B
+	on A.panelist_zip_code = B.panelist_zip_code
+	order by household_code, panel_year, retailer;
+	
+	drop table allzip; 
 quit; 
 
-data dist; 
-	merge dist dist1; 
+proc transpose data = tmp out = dist prefix = distance_; 
 	by household_code panel_year; 
+	id retailer; 
+	var distance; 
 run;
-proc means data = dist; var distance distance_wgr; run;
 
+* Add distance to panelist data; 
 proc sql noprint; 
 	create table tmp as 
-	select A.household_code, A.panel_year, panelist_zip_code, distance, distance_wgr, scantrack_market_descr, 
+	select A.household_code, A.panel_year, panelist_zip_code, distance_cvs, distance_walgreens, scantrack_market_descr, 
 		household_income, household_size, male_head_age, male_head_employment, female_head_age, female_head_employment, 
 		age_and_presence_of_children, race, projection_factor
 	from sub_panelists as A 
@@ -348,7 +362,6 @@ PROC EXPORT DATA= subcig_purchases
      PUTNAMES=YES;
 RUN;
 
-
 *********************************;
 * Shopping trips of non-smokers *; 
 *********************************;
@@ -360,115 +373,84 @@ proc sql noprint;
 	where household_code in (select household_code from nonsmkers); 
 	
 	create table sub_trips_nonsmkers as 
-	select A.*, channel_type
-	from (select * from trips 
-		where household_code in (select household_code from nonsmkers)) as A 
-	left join hms_retailers as B
-	on A.retailer_code = B.retailer_code
+	select * from trips 
+	where household_code in (select household_code from nonsmkers)
 	order by household_code, purchase_date;  
 quit; 
-	
-* Add distance to the panelist data; 
-PROC IMPORT OUT= location
-    DATAFILE= "U:\Users\ccv103\Documents\Research\Store switching\store_data\cvs.csv" 
-    DBMS=csv REPLACE;
-   	GETNAMES=YES; 
-	GUESSINGROWS=5000;
-RUN;
 
 * Merge latitude and longitude; 
 proc sql noprint;
-	create table tmp1 as 
-	select A.*, substr(put(panelist_zip_code, z5.), 1, 3) as zip3, B.Y as hh_latitude, B.X as hh_longitude, COUNTY
-	from sub_nonsmkers as A
+	create table tmp as 
+	select panelist_zip_code, substr(put(panelist_zip_code, z5.), 1, 3) as hh_zip3, B.Y as hh_latitude, B.X as hh_longitude, COUNTY as hh_county
+	from (select distinct panelist_zip_code from sub_nonsmkers) as A
 	left join SASHELP.zipcode as B
 	on A.panelist_zip_code = B.zip; 
 	
-	create table tmp as 
-	select household_code, panel_year, panelist_zip_code, hh_latitude, hh_longitude, A.county, B.latitude, B.longitude, B.zip_code as store_zip
-	from tmp1 as A
-	left join 
-	(select C.*, substr(put(zip_code, z5.), 1, 3) as zip3, D.county from location(drop=county) as C
-	left join SASHELP.zipcode as D
-	on C.zip_code = D.zip)  as B	
-	on A.county = B.county;
-quit; 
-
-%let pi180=0.0174532925199433;
-data tmp;
-	set tmp;
-	if latitude ^=. and hh_latitude ^=. then do; 
-		a = sin((hh_latitude*&pi180-latitude*&pi180)/2)**2 + 
-			cos(latitude*&pi180)*cos(hh_latitude*&pi180)*sin((longitude*&pi180-hh_longitude*&pi180)/2)**2;
-		b =  2*atan2(sqrt(a), sqrt(1-a));
-		distance = 3959*b; 
-	end; 
-	drop a b;
-run; 
-
-proc sql noprint;
-	create table dist as 
-	select household_code, panel_year, min(distance) as distance
-	from tmp
-	group by household_code, panel_year
-	order by household_code, panel_year;
-quit; 
-
-* Get the distance to Walgreens; 
-PROC IMPORT OUT= location
-    DATAFILE= "U:\Users\ccv103\Documents\Research\Store switching\store_data\walgreens.csv" 
-    DBMS=csv REPLACE;
-   	GETNAMES=YES; 
-	GUESSINGROWS=5000;
-RUN;
-
-* Merge latitude and longitude; 
-proc sql noprint;
 	create table tmp1 as 
-	select A.*, substr(put(panelist_zip_code, z5.), 1, 3) as zip3, B.Y as hh_latitude, B.X as hh_longitude, COUNTY
-	from sub_nonsmkers as A
-	left join SASHELP.zipcode as B
-	on A.panelist_zip_code = B.zip; 
-	
-	create table tmp as 
-	select household_code, panel_year, panelist_zip_code, hh_latitude, hh_longitude, A.county, B.latitude, B.longitude, B.zip_code as store_zip
-	from tmp1 as A
+	select panelist_zip_code, hh_latitude, hh_longitude, hh_zip3, hh_county, B.retailer, B.latitude, B.longitude, B.zip_code as store_zip
+	from tmp as A
 	left join 
-	(select C.*, substr(put(zip_code, z5.), 1, 3) as zip3, D.county from location(drop=county) as C
+	(select C.*, substr(put(zip_code, z5.), 1, 3) as zip3, county as store_county
+	from location(drop=county) as C
 	left join SASHELP.zipcode as D
 	on C.zip_code = D.zip)  as B	
-	on A.county = B.county;
+	on A.hh_county = B.store_county;
+
+* Check if a unique household zip code has all the candidate stores; 
+	create table tmp2 as 
+	select *, ifn(count(unique(retailer))<2, 1, 0) as id
+	from tmp1 
+	group by panelist_zip_code; 
+
+* For the zipcode that did not have a store match in the county, merge all the stores for those zip codes; 	
+	create table tmp3 as 
+	select A.*, B.retailer, B.latitude, B.longitude, B.zip_code as store_zip
+	from (select distinct id, panelist_zip_code, hh_longitude, hh_latitude, hh_county, hh_zip3
+		from tmp2 where id = 1) as A
+	full join (select *, 1 as fullid from location ) as B
+	on A.id = B.fullid
+	order by panelist_zip_code; 
 quit; 
 
-%let pi180=0.0174532925199433;
-data tmp;
-	set tmp;
-	if latitude ^=. and hh_latitude ^=. then do; 
-		a = sin((hh_latitude*&pi180-latitude*&pi180)/2)**2 + 
-			cos(latitude*&pi180)*cos(hh_latitude*&pi180)*sin((longitude*&pi180-hh_longitude*&pi180)/2)**2;
-		b =  2*atan2(sqrt(a), sqrt(1-a));
-		distance = 3959*b; 
-	end; 
-	drop a b;
-run; 
-
-proc sql noprint;
-	create table dist1 as 
-	select household_code, panel_year, min(distance) as distance_wgr
-	from tmp
-	group by household_code, panel_year
-	order by household_code, panel_year;
-quit; 
-
-data dist; 
-	merge dist dist1; 
-	by household_code panel_year; 
+data allzip; 
+	set tmp2(where = (id = 0)) tmp3; 
+	drop id; 
+proc sort; by panelist_zip_code; 	
 run;
-proc means data = dist; var distance distance_wgr; run;
+proc datasets noprint; delete tmp tmp1 tmp2 tmp3; run;
+
+%let pi180=0.0174532925199433;
+data allzip;
+	set allzip;
+	if latitude ^=. and hh_latitude ^=. then do; 
+		a = sin((hh_latitude*&pi180-latitude*&pi180)/2)**2 + 
+			cos(latitude*&pi180)*cos(hh_latitude*&pi180)*sin((longitude*&pi180-hh_longitude*&pi180)/2)**2;
+		b =  2*atan2(sqrt(a), sqrt(1-a));
+		distance = 3959*b; 
+	end; 
+	drop a b;
+run; 
+
+proc sql noprint;
+	create table tmp as 
+	select A.household_code, A.panel_year, A.panelist_zip_code, retailer, distance
+	from sub_nonsmkers as A
+	left join 
+	(select panelist_zip_code, retailer, min(distance) as distance from allzip 
+		group by panelist_zip_code, retailer) as B
+	on A.panelist_zip_code = B.panelist_zip_code
+	order by household_code, panel_year, retailer;
+quit; 
+
+proc transpose data = tmp out = dist prefix = distance_; 
+	by household_code panel_year; 
+	id retailer; 
+	var distance; 
+run;
 
 proc sql noprint; 
 	create table tmp as 
-	select A.household_code, A.panel_year, panelist_zip_code, distance, distance_wgr, scantrack_market_descr, 
+	select A.household_code, A.panel_year, panelist_zip_code, distance_cvs, distance_walgreens, scantrack_market_descr, 
 		household_income, household_size, male_head_age, male_head_employment, female_head_age, female_head_employment, 
 		age_and_presence_of_children, race, projection_factor
 	from sub_nonsmkers as A 
@@ -488,7 +470,6 @@ quit;
 
 proc contents data = sub_nonsmkers; run;
 proc contents data = sub_trips_nonsmkers; run;
-
 
 * Export data; 
 PROC EXPORT DATA= sub_nonsmkers

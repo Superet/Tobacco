@@ -38,26 +38,21 @@ purchases		<- subset(purchases, trip_code_uc %in% trips$trip_code_uc)
 ############
 # Function # 
 ############
-Cls.se.fn	<- function(model, cluster.vec, est.table = TRUE){
-# This function returns the clustered standard error 
-	G	<- length(unique(cluster.vec))		# Number of groups
-	N	<- length(cluster.vec)				# Number of observations
-	K	<- length(coef(model))				
-	dfa	<- (G/(G - 1)) * (N - 1)/model$df.residual		# STATA-like adjusted degree of freedom
-	cls.vcov	<- vcovHC(model, type = "HC0", cluster = "group")
-	if(est.table){
-		return(coeftest(model, vcov = cls.vcov))
-	}else{
-		se		<- sqrt(diag(cls.vcov))
-		return(list(vcov = cls.vcov, se = se))
-	}
+Cls.se.fn <- function(model, cluster.vec){
+# Var(beta) = (X'X)^(-1) [(eps*X)'(eps*X)](X'X)^(-1)
+	X 	<- model.matrix(model)
+	uj 	<- residuals(model)  * X
+	uj 	<- apply(uj, 2, function(x) tapply(x, cluster.vec, sum))
+	A	<- solve(crossprod(X))
+	cls.vcov	<- A %*% crossprod(uj) %*% A	
+	return(sqrt(diag(cls.vcov)))
 }
 
 #################
 # Organize data # 
 #################
 # Add week
-event.date	<- as.Date("2014-09-01", format = "%Y-%m-%d")			# Placebo event 
+event.date	<- as.Date("2014-09-01", format = "%Y-%m-%d")			
 event.month	<- month(event.date) + 12
 cvs.ret	<- 4914		# retailer_code for CVS
 qunit	<- 20		# 20 cigaretts per pack 
@@ -74,6 +69,7 @@ trips$year			<- year(trips$purchase_date)
 trips$month			<- month(trips$purchase_date)
 trips$month			<- ifelse(trips$year == 2012, 1, ifelse(trips$year == 2013, trips$month, trips$month + 12))
 endweek				<- c(min(purchases$week), max(purchases$week))
+trips				<- subset(trips, year > 2012)
 
 # Mark CVS
 trips$cvs	<- ifelse(trips$retailer_code == cvs.ret, 1, 0)
@@ -111,9 +107,28 @@ tmp1$heavy 	<- 1*(tmp1$consum > 2.5)
 tmp			<- setNames(tmp1$heavy, tmp1$household_code)
 mypan$heavy 	<- tmp[as.character(mypan$household_code)]
 
+# Distribution of the fraction of cigarette spending conditional on CVS visit
+tmp	<- data.table(subset(purchases, cvs==1 & purchase_date < event.date))
+tmp	<- tmp[,list(total_price_paid = sum(total_price_paid - coupon_value)), by = list(trip_code_uc)]
+tmp	<- merge(trips[trips$cvs==1 & trips$purchase_date < event.date, ], tmp, by = "trip_code_uc", all.x = T)
+tmp[is.na(tmp$total_price_paid), "total_price_paid"]	<- 0 
+tmp 	<- data.table(tmp[,c("household_code", "total_price_paid", "total_spent", "purchase_date")])
+tmp		<- tmp[,list(cig_frac = sum(total_price_paid)/sum(total_spent), 
+					 cig_frac_cond = sum(total_price_paid[total_price_paid>0])/sum(total_spent[total_price_paid>0]) ),
+					by = list(household_code)]
+tmp[is.na(tmp)]	<- 0
+summary(tmp)
+median(tmp[cig_frac>0,cig_frac])		
+tmp$frac_seg	<- ifelse(tmp$cig_frac ==0, "Zero", ifelse(tmp$cig_frac <= median(tmp[cig_frac>0,cig_frac]), "S1", "S2"))
+mypan	<- merge(mypan, tmp[,list(household_code, frac_seg)], by = "household_code", all.x=T)
+mypan[is.na(mypan$frac_seg), "frac_seg"]	<- "Never"
+mypan$frac_seg	<- factor(mypan$frac_seg, levels = c("Never","Zero", "S1", "S2"))
+table(mypan$frac_seg)
+summary(mypan)
+
 purchases	<- subset(purchases, household_code %in% mypan$household_code)
 trips		<- subset(trips, household_code %in% mypan$household_code)
-purchases	<- merge(purchases, mypan[,c("household_code", "ban_ard", "distance","cvs_in2", "cvs_in5", "wgr_in2", "heavy")], 
+purchases	<- merge(purchases, mypan[,c("household_code", "ban_ard", "distance","cvs_in2", "cvs_in5", "wgr_in2", "heavy", "frac_seg")], 
 						by = "household_code", all.x=T)
 
 ###########################
@@ -172,9 +187,10 @@ dim(mydata)
 
 # Trips and spending 
 tmp1 	<- data.table(trips)
-tmp1	<- tmp1[,list(	trip_cvs 		= 1*(sum(cvs)>0), 
-						trip_othdrug 	= sum(channel_type == "Drug Store" & cvs ==0 ), 
-						trip_othchannel = sum(channel_type != "Drug Store"), 
+tmp1	<- tmp1[,list(total_spent = sum(total_spent)), by = list(household_code, month, purchase_date, channel_type, retailer_code, cvs)]
+tmp1	<- tmp1[,list(	trip_cvs 		= length(purchase_date[cvs==1]), 
+						trip_othdrug 	= length(purchase_date[channel_type == "Drug Store" & cvs ==0]), 
+						trip_othchannel = length(purchase_date[channel_type != "Drug Store"]), 
 						dol_cvs 		= sum(total_spent*cvs, na.rm = T), 
 						dol_othdrug		= sum(total_spent*(1-cvs)*1*(channel_type == "Drug Store"), na.rm = T), 
 						dol_othchannel	= sum(total_spent*1*(channel_type != "Drug Store"), na.rm = T), 
@@ -197,7 +213,7 @@ mydata$year		<- ifelse(mydata$month > 12, 2014, 2013)
 mydata$month1	<- mydata$month %% 12
 mydata$month1	<- ifelse(mydata$month1 == 0, 12, mydata$month1)
 mydata$month1	<- factor(mydata$month1)
-mydata			<- merge(mydata, mypan[,c("household_code", "panelist_zip_code","distance", "ban_ard","cvs_in2", "cvs_in3","wgr_in2", "heavy")], 
+mydata			<- merge(mydata, mypan[,c("household_code", "panelist_zip_code","distance", "ban_ard","cvs_in2", "cvs_in3","wgr_in2", "heavy", "frac_seg")], 
 						by = "household_code", all.x=T)
 dim(mydata)
 mydata$after	<- 1*(mydata$month >= event.month)
@@ -205,52 +221,15 @@ mydata$hhmonth	<- paste(mydata$household_code, mydata$month, sep="-")
 mydata$treat	<- with(mydata, 1*(distance <= cutoff & ban_ard == 0))
 table(mydata$treat)
 table(mypan$distance<= cutoff& mypan$ban_ard == 0)
+hist(mydata$trip_othdrug)
 
 ##################################
 # DID regression of small window # 
 ##################################			
 # Spcifications: 1 DV (cigarette quantity) * 2 IV specifications (2-way DID, 3-way DID)
 # Restrict to a short window 
-mydata1		<- subset(mydata, month >= event.month - 4 & month <= event.month + 3)						# Data with actual event 
-
-# Drop the households who live in the counties that have already implemented the ban.
-sel		<-	mydata1$ban_ard != 1
-fit.ls0	<- list(NULL)
-fit.ls0[[1]]	<- plm(q ~ after + treat + after*treat , data = mydata1[sel,], 
-					index = c("household_code", "month"), model = "within") 
-fit.ls0[[2]]	<- plm(q_othdrug ~ after + treat + after*treat , data = mydata1[sel,], 
-					index = c("household_code", "month"), model = "within")
-fit.ls0[[3]]	<- plm(q_othchannel ~ after + treat + after*treat , data = mydata1[sel,], 
-					index = c("household_code", "month"), model = "within")
-fit.ls0[[4]]	<- plm(trip_cvs ~ after + treat + after*treat , data = mydata1[sel,], 
-					index = c("household_code", "month"), model = "within") 
-fit.ls0[[5]]	<- plm(trip_othdrug ~ after + treat + after*treat , data = mydata1[sel,], 
-					index = c("household_code", "month"), model = "within")
-fit.ls0[[6]]	<- plm(trip_othchannel ~ after + treat + after*treat , data = mydata1[sel,], 
-					index = c("household_code", "month"), model = "within")
-fit.ls0[[7]]	<- plm(dol_cvs ~ after + treat + after*treat , data = mydata1[sel,], 
-					index = c("household_code", "month"), model = "within") 
-fit.ls0[[8]]	<- plm(dol_othdrug ~ after + treat + after*treat , data = mydata1[sel,], 
-					index = c("household_code", "month"), model = "within")
-fit.ls0[[9]]	<- plm(dol_othchannel ~ after + treat + after*treat , data = mydata1[sel,], 
-					index = c("household_code", "month"), model = "within")
-fit.ls0[[10]]	<- plm(dol_total ~ after + treat + after*treat , data = mydata1[sel,], 
-					index = c("household_code", "month"), model = "within")	
-fit.ls0[[11]]	<- plm(netdol_cvs ~ after + treat + after*treat , data = mydata1[sel,], 
-					index = c("household_code", "month"), model = "within") 
-fit.ls0[[12]]	<- plm(netdol_othdrug ~ after + treat + after*treat , data = mydata1[sel,], 
-					index = c("household_code", "month"), model = "within")
-fit.ls0[[13]]	<- plm(netdol_othchannel ~ after + treat + after*treat , data = mydata1[sel,], 
-					index = c("household_code", "month"), model = "within")									 
-cls.se0		<- lapply(fit.ls0, function(x) Cls.se.fn(x, cluster.vec = mydata1[sel,"household_code"], est.table = FALSE)$se)
-
-stargazer(fit.ls0, type = "html", align = TRUE, title = "Drop the counties that have already implemented tobacco ban", 
-		keep = c("after", "treat"), se = cls.se0,
-		covariate.labels = c("After", "After*CloseDist"),  
-		add.lines = list(c("Household",rep("FE", length(fit.ls0)))), 
-		no.space = TRUE, omit.stat = c("rsq", "adj.rsq", "f"), 
-		notes = "S.E. clustered over households", 
-		out = paste(plot.wd, "/tb_", out.file, "_dropBoston_",Sys.Date(), ".html", sep=""))
+window.month	<- 4				# The analysis windown around the event
+mydata1		<- subset(mydata, month >= event.month - window.month-1 & month <= event.month + window.month)						# Data with actual event 
 
 # -----------------------------#
 # Use Boston and SF as control #
@@ -261,12 +240,9 @@ fit.ls1[[2]]	<- plm(q_othdrug ~ after + treat + after*treat , data = mydata1,
 					index = c("household_code", "month"), model = "within")
 fit.ls1[[3]]	<- plm(q_othchannel ~ after + treat + after*treat , data = mydata1, 
 					index = c("household_code", "month"), model = "within")
-fit.ls1[[4]]	<- plm(trip_cvs ~ after + treat + after*treat , data = mydata1, 
-					index = c("household_code", "month"), model = "within") 
-fit.ls1[[5]]	<- plm(trip_othdrug ~ after + treat + after*treat , data = mydata1, 
-					index = c("household_code", "month"), model = "within")
-fit.ls1[[6]]	<- plm(trip_othchannel ~ after + treat + after*treat , data = mydata1, 
-					index = c("household_code", "month"), model = "within")
+fit.ls1[[4]]	<- glmer(trip_cvs ~ after + treat + after*treat + (1|household_code), data = mydata1, family = poisson(link = "log"))
+fit.ls1[[5]]	<- glmer(trip_othdrug ~ after + treat + after*treat + (1|household_code), data = mydata1, family = poisson(link = "log"))
+fit.ls1[[6]]	<- glmer(trip_othchannel ~ after + treat + after*treat + (1|household_code), data = mydata1, family = poisson(link = "log"))
 fit.ls1[[7]]	<- plm(dol_cvs ~ after + treat + after*treat , data = mydata1, 
 					index = c("household_code", "month"), model = "within") 
 fit.ls1[[8]]	<- plm(dol_othdrug ~ after + treat + after*treat , data = mydata1, 
@@ -281,12 +257,14 @@ fit.ls1[[12]]	<- plm(netdol_othdrug ~ after + treat + after*treat , data = mydat
 					index = c("household_code", "month"), model = "within")
 fit.ls1[[13]]	<- plm(netdol_othchannel ~ after + treat + after*treat , data = mydata1, 
 					index = c("household_code", "month"), model = "within")									 
-cls.se1		<- lapply(fit.ls1, function(x) Cls.se.fn(x, cluster.vec = mydata1$household_code, est.table = FALSE)$se)
+cls.se1		<- lapply(fit.ls1, function(x) Cls.se.fn(x, cluster.vec = mydata1$household_code))
 
+myline 		<- list(c("Model", rep("Linear", 3), rep("Poisson", 3), rep("Linear", length(fit.ls1) - 6)), 
+					c("Household",rep("FE", 3), rep("RE", 3), rep("FE", length(fit.ls1) - 6) ))
 stargazer(fit.ls1, type = "html", align = TRUE, title = "Use the counties that have implemented the ban as control", 
-		keep = c("after", "treat"), se = cls.se1,
-		covariate.labels = c("After", "After*CloseDist"),  
-		add.lines = list(c("Household",rep("FE", length(fit.ls1)))), 
+		keep = c("after", "treat"), se = cls.se1, model.names = FALSE, 
+		covariate.labels = c("After", "Treat","After*Treat"),  
+		add.lines = myline, 
 		no.space = TRUE, omit.stat = c("rsq", "adj.rsq", "f"), 
 		notes = "S.E. clustered over households", 
 		out = paste(plot.wd, "/tb_", out.file, "_",Sys.Date(), ".html", sep=""))	
@@ -300,12 +278,9 @@ fit.ls2[[2]]	<- plm(q_othdrug ~ after + treat + after*treat + month1, data = myd
 					index = c("household_code", "month"), model = "within")
 fit.ls2[[3]]	<- plm(q_othchannel ~ after + treat + after*treat + month1 , data = mydata, 
 					index = c("household_code", "month"), model = "within")
-fit.ls2[[4]]	<- plm(trip_cvs ~ after + treat + after*treat + month1 , data = mydata, 
-					index = c("household_code", "month"), model = "within") 
-fit.ls2[[5]]	<- plm(trip_othdrug ~ after + treat + after*treat + month1 , data = mydata, 
-					index = c("household_code", "month"), model = "within")
-fit.ls2[[6]]	<- plm(trip_othchannel ~ after + treat + after*treat + month1 , data = mydata, 
-					index = c("household_code", "month"), model = "within")
+fit.ls2[[4]]	<- glmer(trip_cvs ~ after + treat + after*treat + month1+ (1|household_code), data = mydata, family = poisson(link = "log"))
+fit.ls2[[5]]	<- glmer(trip_othdrug ~ after + treat + after*treat + month1 + (1|household_code), data = mydata, family = poisson(link = "log"))
+fit.ls2[[6]]	<- glmer(trip_othchannel ~ after + treat + after*treat + month1 + (1|household_code), data = mydata, family = poisson(link = "log"))
 fit.ls2[[7]]	<- plm(dol_cvs ~ after + treat + after*treat + month1 , data = mydata, 
 					index = c("household_code", "month"), model = "within") 
 fit.ls2[[8]]	<- plm(dol_othdrug ~ after + treat + after*treat + month1 , data = mydata, 
@@ -320,12 +295,13 @@ fit.ls2[[12]]	<- plm(netdol_othdrug ~ after + treat + after*treat + month1 , dat
 					index = c("household_code", "month"), model = "within")
 fit.ls2[[13]]	<- plm(netdol_othchannel ~ after + treat + after*treat + month1 , data = mydata, 
 					index = c("household_code", "month"), model = "within")
-cls.se2		<- lapply(fit.ls2, function(x) Cls.se.fn(x, cluster.vec = mydata$household_code, est.table = FALSE)$se)
+cls.se2		<- lapply(fit.ls2, function(x) Cls.se.fn(x, cluster.vec = mydata$household_code))
 
+myline2		<- c(myline, list(c("Month", rep("FE", length(fit.ls2)))))
 stargazer(fit.ls2, type = "html", align = TRUE, title = "Use the counties that have implemented the ban as control and control for month", 
-		keep = c("after", "treat"), se = cls.se2,
-		covariate.labels = c("After", "After*CloseDist"),  
-		add.lines = list(c("Household",rep("FE", length(fit.ls2))), c("Month",rep("FE", 10))), 
+		keep = c("after", "treat"), se = cls.se2, model.names = FALSE, 
+		covariate.labels = c("After", "Treat","After*Treat"),  
+		add.lines = myline2,
 		no.space = TRUE, omit.stat = c("rsq", "adj.rsq", "f"), 
 		notes = "S.E. clustered over households", 
 		out = paste(plot.wd, "/tb_", out.file, "_month_",Sys.Date(), ".html", sep=""))
@@ -356,18 +332,17 @@ fit.ls3[[11]]	<- plm(q_gas ~ after + treat + after*treat + month1, data = mydata
 					index = c("household_code", "month"), model = "within")
 fit.ls3[[12]]	<- plm(q_discount ~ after + treat + after*treat + month1, data = mydata, 
 					index = c("household_code", "month"), model = "within")					
-cls.se3		<- c(lapply(fit.ls3[1:6], function(x) Cls.se.fn(x, cluster.vec = mydata1$household_code, est.table = FALSE)$se), 
-				 lapply(fit.ls3[7:12], function(x) Cls.se.fn(x, cluster.vec = mydata$household_code, est.table = FALSE)$se) )
+cls.se3		<- c(lapply(fit.ls3[1:6], function(x) Cls.se.fn(x, cluster.vec = mydata1$household_code)), 
+				 lapply(fit.ls3[7:12], function(x) Cls.se.fn(x, cluster.vec = mydata$household_code) ) )
 
 stargazer(fit.ls3, type = "html", align = TRUE, title = "Regressions of cigarette quantity at different channels", 
 		keep = c("after", "treat"), se = cls.se3,
-		covariate.labels = c("After", "After*Treatment"),  
+		covariate.labels = c("After", "After*Treat"),  
 		add.lines = list(c("Household",rep("FE", length(fit.ls3))), c("Month", rep("", 6), rep("FE", 6)), 
 						c("Window", rep("8 m.", 6), rep("2 yr.", 6))), 
 		no.space = TRUE, omit.stat = c("rsq", "adj.rsq", "f"), 
 		notes = "S.E. clustered over households", 
 		out = paste(plot.wd, "/tb_", out.file, "_channel_",Sys.Date(), ".html", sep=""))	
-
 
 save.image(file = paste(plot.wd, "/", out.file, "_", Sys.Date(),".rdata", sep=""))			
 

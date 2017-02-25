@@ -5,6 +5,7 @@ library(lubridate)
 library(scales)
 library(stargazer)
 library(xlsx)
+library(gridExtra)
 
 # setwd("U:/Users/ccv103/Desktop")
 setwd("~/Documents/Research/Tobacco/processed_data")
@@ -81,6 +82,44 @@ tmp1$heavy 	<- 1*(tmp1$consum > 2.5)
 tmp			<- setNames(tmp1$heavy, tmp1$household_code)
 mypan$heavy 	<- tmp[as.character(mypan$household_code)]
 
+# Fraction of cigaratte purchases at CVS
+tmp1		<- data.table(subset(purchases, purchase_date < event.date))
+tmp1		<- tmp1[,list(cvs = sum(quantity*size*cvs), total = sum(quantity*size)), 
+							by = list(household_code)]
+tmp1		<- tmp1[,cvs_share := cvs/total]
+hist(tmp1$cvs_share, breaks = 100)
+
+# Distribution of the fraction of cigarette spending conditional on CVS visit
+tmp2	<- data.table(subset(purchases, cvs==1 & purchase_date < event.date))
+tmp2	<- tmp2[,list(total_price_paid = sum(total_price_paid - coupon_value)), by = list(trip_code_uc)]
+tmp2	<- merge(trips[trips$cvs==1 & trips$purchase_date < event.date, ], tmp2, by = "trip_code_uc", all.x = T)
+tmp2[is.na(tmp2$total_price_paid), "total_price_paid"]	<- 0 
+tmp2	<- data.table(tmp2)
+tmp2	<- tmp2[, cig_frac := total_price_paid/total_spent]
+p1		<- ggplot(tmp2, aes(cig_frac)) + geom_histogram() + 
+				labs(title = "Fraction of cigarette spending conditional on CVS visit across all CVS trips") 
+p2 		<- ggplot(subset(tmp2, cig_frac>0), aes(cig_frac)) + geom_histogram() + 
+				labs(title = "Fraction of cigarette spending conditional on CVS visit and cigarette purchases") 
+grid.arrange(p1, p2)
+
+# Fraction of cigarette spending for each household 
+tmp 	<- tmp2[,list(household_code, total_price_paid, total_spent, purchase_date)]
+tmp		<- tmp[,list(cig_frac = sum(total_price_paid)/sum(total_spent), 
+					 cig_frac_cond = sum(total_price_paid[total_price_paid>0])/sum(total_spent[total_price_paid>0]) ),
+					by = list(household_code)]
+tmp[is.na(tmp)]	<- 0
+summary(tmp)
+ggtmp	<- melt(tmp, id.vars = "household_code")
+ggtmp$variable <- factor(ggtmp$variable, levels = c("cig_frac", "cig_frac_cond"), 
+					labels = c("Fraction of cigarette spending\n out of total CVS spending", 
+					"Fraction of cigarette spending\n conditional on cigarette purchases at CVS"))
+ggplot(ggtmp, aes(value)) + geom_histogram() + 
+		facet_wrap(~variable) 
+median(tmp[cig_frac>0,cig_frac])		
+tmp$frac_seg	<- ifelse(tmp$cig_frac ==0, "Zero", ifelse(tmp$cig_frac <= median(tmp[cig_frac>0,cig_frac]), "S1", "S2"))
+table(tmp$frac_seg)
+mypan	<- merge(mypan, tmp[,list(household_code, frac_seg)], by = "household_code", all.x=T)
+
 # Collapse demographic levels
 new.col		<- list(setNames(c(2500,6500, 	9000,	11000,	13500, 	17500,	22500,	27500, 	32500,	37500, 	42500,	47500, 55000, 	65000, 	75000, 100000), 
 							 c(3,	4,		6,		8,		10,		11,		13,		15,		16,		17,		18,		19,		21,		23,		26,		27)), 		# Income code		# Income code
@@ -111,9 +150,9 @@ lapply(demo.col[!sel], function(i) table(mypan[,i]))
 
 purchases	<- subset(purchases, household_code %in% mypan$household_code)
 trips		<- subset(trips, household_code %in% mypan$household_code)
-trips		<- merge(trips, mypan[,c("household_code", "ban_ard", "distance","cvs_in2", "cvs_in5", "wgr_in2", "heavy", "treat")], 
+trips		<- merge(trips, mypan[,c("household_code", "ban_ard", "distance","cvs_in2", "cvs_in5", "wgr_in2", "heavy", "treat","frac_seg")], 
 						by = "household_code", all.x=T)
-purchases	<- merge(purchases, mypan[,c("household_code", "ban_ard", "distance","cvs_in2", "cvs_in5", "wgr_in2", "heavy", "treat")], 
+purchases	<- merge(purchases, mypan[,c("household_code", "ban_ard", "distance","cvs_in2", "cvs_in5", "wgr_in2", "heavy", "treat","frac_seg")], 
 						by = "household_code", all.x=T)						
 
 # Calculate pre-event shopping behavior for each household
@@ -346,6 +385,27 @@ ggtmp$cvs_in2	<- factor(ggtmp$cvs_in2, levels = c(1, 0), labels = c("Less than 2
 
 pdf(paste(plot.wd, "/fg_percap_trend_heavy.pdf", sep=""), width = ww, height = ww*ar)
 ggplot(subset(ggtmp, !is.na(cvs_in2) & !is.na(heavy)), aes(week, value, linetype = cvs_in2, color = heavy)) + geom_line() + 
+			geom_vline(xintercept = as.numeric(event.date), col = "red") + 
+			facet_wrap(~variable, scales = "free") + 
+			guides(linetype = guide_legend(title = "Distance to CVS"), color = guide_legend(title = "Smokers")) + 
+			theme(legend.position = "bottom") + 
+			labs(y = "Volume (packs)", title = "Per capita consumption by consumer groups") 
+dev.off()		
+
+
+# --------------------------------------------------------------------------------------- #
+# Compare per capita consumption trend by consumer group -- segment of cigarette spending #			
+ggtmp	<- data.table(purchases)			
+ggtmp	<- ggtmp[!week %in% endweek, list(Total = sum(quantity*size/qunit, na.rm=T)/length(unique(household_code)), 
+					CVS = sum(quantity*size*cvs/qunit, na.rm=T)/length(unique(household_code)), 
+ 					OtherDrug = sum(quantity*size*(1-cvs)*1*(channel_type=="Drug Store")/qunit, na.rm=T)/length(unique(household_code)), 
+					OtherChannel = sum(quantity*size*(1-cvs)*1*(channel_type!="Drug Store")/qunit, na.rm=T)/length(unique(household_code))), 
+				by = list(cvs_in2, frac_seg,week)]
+ggtmp	<- melt(ggtmp, id.vars = c("cvs_in2", "frac_seg", "week"))
+ggtmp$cvs_in2	<- factor(ggtmp$cvs_in2, levels = c(1, 0), labels = c("Less than 2 mi.", "Greater than 2 mi."))
+
+pdf(paste(plot.wd, "/fg_percap_trend_fracseg.pdf", sep=""), width = ww, height = ww*ar)
+ggplot(subset(ggtmp, !is.na(cvs_in2) & !is.na(frac_seg)), aes(week, value, linetype = cvs_in2, color = frac_seg)) + geom_line() + 
 			geom_vline(xintercept = as.numeric(event.date), col = "red") + 
 			facet_wrap(~variable, scales = "free") + 
 			guides(linetype = guide_legend(title = "Distance to CVS"), color = guide_legend(title = "Smokers")) + 
