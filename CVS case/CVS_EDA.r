@@ -10,6 +10,7 @@ library(gridExtra)
 # setwd("U:/Users/ccv103/Desktop")
 setwd("~/Documents/Research/Tobacco/processed_data")
 plot.wd		<- "~/Desktop"
+ww1			<- 4.5
 ww			<- 6.5
 ar			<- .6
 out.file <- "cvs_sumstat"
@@ -261,7 +262,8 @@ pdf(paste(plot.wd, "/fg_pie_mktshare.pdf", sep=""), width = 6, height = 5)
 ggplot(tmp, aes(x = 1, mkt.share, fill = channel.lab)) + geom_bar(stat = "identity", width = 1)+
 		coord_polar(theta = "y") + 
 		guides(fill = guide_legend(title = "")) + 
-		labs(y = "Market share of channels in 2013 - 2014")
+		labs(y = "Market share of channels in 2013 - 2014") + 
+		theme(axis.text = element_blank(), axis.ticks = element_blank())
 dev.off()		
 
 # Cigarrett sales within drug stores

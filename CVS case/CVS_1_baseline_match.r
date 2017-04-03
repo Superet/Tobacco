@@ -9,6 +9,7 @@ library(lme4)
 library(xlsx)
 library(MatchIt)
 library(lmtest)
+library(Matching)
 
 # setwd("~/Documents/Research/Tobacco/processed_data")
 # plot.wd		<- "~/Desktop"
@@ -162,6 +163,7 @@ tmp1	<- lapply(1:nrow(tmp), function(i) tmp[i,start] + c(0:tmp[i,n]))
 names(tmp1)	<- tmp$household_code
 tmp1	<- melt(tmp1)
 names(tmp1)	<- c("month", "household_code")
+tmp1$household_code	<- as.numeric(tmp1$household_code)
 
 # Actual cigarette purchases 
 tmp2	<- data.table(purchases)
@@ -215,7 +217,7 @@ mydata$netdol			<- with(mydata, dol_total - cigdol)
 mydata$netdol_cvs		<- with(mydata, dol_cvs - cigdol_cvs)
 mydata$netdol_othdrug	<- with(mydata, dol_othdrug - cigdol_othdrug)
 mydata$netdol_othchannel<- with(mydata, dol_othchannel - cigdol_othchannel)
-cat("Summary stats:\n"); print(summary(mydata[, -c(1:2)])); cat("\n")
+cat("Summary stats:\n"); print(summary(mydata)); cat("\n")
 
 # Calculate pre-event shopping behavior for each household
 # tmp2	<- tmp1[month < event.month,]
@@ -263,212 +265,74 @@ purchases	<- merge(purchases, mypan[,c("household_code", "treat")], by = "househ
 #############################		
 # Propensity score matching #		
 #############################
-# Matching without replacement
-my.ratio	<- 1
-match.mod	<- matchit(treat ~ income + age + have_kids + employment + race + distance_cvs +
-                       pre_q + pre_trip_total + pre_trip_othchannel+ pre_dol_total + pre_dol_othchannel, 
-                     method = "nearest", data = mypan[,c("household_code","treat", "distance_cvs",demo.col,bhv.col)], 
-                     ratio = my.ratio, replace = FALSE, discard = "both")
-match.pan	<- match.data(match.mod)
-summary(match.pan$distance)
-# sum(match.pan$distance > 1 - ps.trim | match.pan$distance < ps.trim)
-# mean(match.pan$distance > 1 - ps.trim | match.pan$distance < ps.trim)
-# match.pan  <- subset(match.pan, distance >= ps.trim & distance <= 1-ps.trim)
-dim(match.pan)
-table(match.pan$treat); table(match.pan$weights)
-mydata.match	<- subset(mydata, household_code %in% match.pan$household_code)
-dim(mydata.match)
-
-# Matching with replacement 
-match.mod1	<- matchit(treat ~ income + age + have_kids + employment + race + distance_cvs +
-                       pre_q + pre_trip_total + pre_trip_othchannel+ pre_dol_total + pre_dol_othchannel, 
-                     method = "nearest", data = mypan[,c("household_code","treat", "distance_cvs",demo.col,bhv.col)], 
-                     ratio = my.ratio, replace = TRUE, discard = "both")
-match.pan1	<- match.data(match.mod1)
-dim(match.pan1)
-table(match.pan1$treat); table(match.pan1$weights)
-tmp			<- match.mod1$nn["Matched",]
-match.pan1$rep	<- ifelse(match.pan1$treat == 1, 1, match.pan1$weights/(tmp[1]/tmp[2]))		
-table(match.pan1$rep)
-
-# Use repeated panel data for the households in the case of matching of replacement
-rownames(match.pan1)	<- NULL
-match.pan1		<- match.pan1[order(match.pan1$household_code),]
-mydata.match1	<- subset(mydata, household_code %in% match.pan1$household_code)
-rownames(mydata.match1)	<- NULL
-mydata.match1	<- mydata.match1[order(mydata.match1$household_code),]
-dim(mydata.match1); length(unique(mydata.match1$household_code))
-idx1			<- split(1:nrow(mydata.match1), mydata.match1$household_code)
-idx.new 		<- lapply(1:length(idx1), function(i) expand.grid(idx1[[i]], 1:match.pan1[i,"rep"]))
-idx.new			<- do.call(rbind, idx.new)
-mydata.match1	<- mydata.match1[idx.new[,1],]
-dim(idx.new); dim(mydata.match1)
-mydata.match1$household_code1	<- paste(mydata.match1$household_code, idx.new[,2], sep="-")
-
-# Check demongraphic balance
-pdf(paste(plot.wd,"/fg_", out.file, "_blcQQ.pdf", sep=""), width = ww, height = ww*ar)
-plot(match.mod, interactive = FALSE, main = "Matching without replacement")
-plot(match.mod1, interactive = FALSE, main = "Matching with repalcement")
-dev.off()
-
-sd.all<-apply(match.mod$X, 2, sd)
-blc		<- summary(match.mod)
-cat("Summary of matching balance:\n"); print(blc); cat("\n")
-sel 	<- c("Means Treated", "Means Control", "Mean Diff")
-tmp		<- blc$sum.matched[,sel]
-names(tmp)	<- paste("M_", names(tmp), sep="")
-tmp		<- cbind(blc$sum.all[,sel], tmp)
-blc1		<- summary(match.mod1)
-cat("Summary of matching balance with replacement:\n"); print(blc); cat("\n")
-tmp1		<- blc1$sum.matched[,sel]
-names(tmp1)	<- paste("rlc_", names(tmp1), sep="")
-tmp		<- cbind(tmp, tmp1)
-tmp1	<- c(blc$nn[1,c("Treated", "Control")], NA, 
-           blc$nn[2,c("Treated", "Control")], NA, 
-           blc1$nn[2,c("Treated", "Control")], NA)					# Number of controls and treatment
-blc		<- rbind(tmp1, tmp)
-blc[names(sd.all),] <- blc[names(sd.all),]/(sd.all %*% t(rep(1, ncol(blc))) )
-rownames(blc)	<- c("No. households", "Propensity score", 
-					sapply(rownames(blc)[-c(1:2)],function(x) paste(toupper(substr(x,1,1)),substr(x,2,nchar(x)),sep="")) )
-cat("The balance table of matching without replacement:\n"); print(round(blc,2)); cat("\n")
-
-# #----------------#
-# Check the trend of the matched sample
-plots	<- list(NULL)
-idx 	<- 1
-ggtmp	<- data.table(subset(purchases, !week %in% endweek & household_code %in% match.pan$household_code))
-ggtmp	<- ggtmp[,nhh:= length(unique(household_code)), by = list(treat)]
-ggtmp	<- ggtmp[, list(Total = sum(quantity*size/qunit, na.rm=T)/nhh[1], 
-                      CVS = sum(quantity*size*cvs/qunit, na.rm=T)/nhh[1], 
-                      OtherDrug = sum(quantity*size*(1-cvs)*1*(channel_type == "Drug Store")/qunit, na.rm=T)/nhh[1],
-                      OtherChannel = sum(quantity*size*1*(channel_type != "Drug Store")/qunit, na.rm=T)/nhh[1]
-					), by = list(treat, week)]
-ggtmp	<- melt(ggtmp, id.vars = c("treat", "week"))		
-ggtmp$treat	<- factor(ggtmp$treat, levels = c(1,0), labels = c("Treatment", "Control"))
-plots[[idx]] 	<- ggplot(ggtmp, aes(week, value, linetype = treat)) + geom_line() + 
-					  geom_vline(xintercept = as.numeric(event.date), col = "red") + 
-					  facet_wrap(~variable, scales = "free") + 
-					  theme(legend.position = "bottom") + 
-					  guides(linetype = guide_legend(title = "")) + 
-					  labs(y = "Packs per person", title = "Cigarette consumption by consumer groups")
-idx	<- idx + 1
-
-# Shopping trips per week per person #
-ggtmp	<- data.table(subset(trips, !week %in% endweek & household_code %in% match.pan$household_code))
-ggtmp	<- ggtmp[,list(total_spent = sum(total_spent)), by = list(treat,household_code, month, week, purchase_date, channel_type, retailer_code, cvs)]
-ggtmp	<- ggtmp[,nhh:=length(unique(household_code)), by = list(treat)]
-ggtmp	<- ggtmp[,list(	Total = length(purchase_date)/nhh[1], 
-                      CVS = length(purchase_date[cvs==1])/nhh[1], 
-                      OtherDrug = length(purchase_date[cvs==0 & channel_type == "Drug Store"])/nhh[1],
-                      OtherChannel = length(purchase_date[cvs==0 & channel_type != "Drug Store"])/nhh[1] 
-				), 
-				by = list(treat, week)]
-ggtmp	<- melt(ggtmp, id.vars = c("treat", "week"))		
-ggtmp$treat	<- factor(ggtmp$treat, levels = c(1,0), labels = c("Treatment", "Control"))
-plots[[idx]] <- ggplot(ggtmp, aes(week, value, linetype = treat)) + geom_line() + 
-						geom_vline(xintercept = as.numeric(event.date), col = "red") + 
-						facet_wrap(~variable, scales = "free") +
-						guides(linetype = guide_legend(title = "")) + 
-						theme(legend.position = "bottom") + 
-						labs(y = "Trips per person", title = "Shopping trips by consumer groups")
-idx		<- idx + 1
-
-# Expenditure 
-ggtmp	<- data.table(subset(trips, !week %in% endweek & household_code %in% match.pan$household_code))
-ggtmp	<- ggtmp[,nhh:=length(unique(household_code)), by = list(treat)]
-ggtmp	<- ggtmp[,list(	Total = sum(total_spent)/nhh[1], 
-                      CVS = sum(total_spent[cvs==1])/nhh[1], 
-                      OtherDrug = sum(total_spent[cvs==0 & channel_type == "Drug Store"])/nhh[1],
-                      OtherChannel = sum(total_spent[cvs==0 & channel_type != "Drug Store"])/nhh[1]
-				), 
-				by = list(treat, week)]
-ggtmp	<- melt(ggtmp, id.vars = c("treat", "week"))		
-ggtmp$treat	<- factor(ggtmp$treat, levels = c(1,0), labels = c("Treatment", "Control"))
-plots[[idx]]<- ggplot(ggtmp, aes(week, value, linetype = treat)) + geom_line() + 
-					geom_vline(xintercept = as.numeric(event.date), col = "red") + 
-					facet_wrap(~variable, scales = "free") + 
-					guides(linetype = guide_legend(title = "")) + 
-					theme(legend.position = "bottom") + 
-					labs(y = "Expenditure per person", title = "Expenditure by consumer groups")
-
-pdf(paste(plot.wd,"/fg_",out.file, "_pmatch_trend_", Sys.Date(), ".pdf", sep=""), width = 7.5, height = 7.5*ar)			
-for(i in 1:length(plots)){
-  print(plots[[i]])
-}
-dev.off()
-
-# --------------------------------------------------- #
-# Overall before-after differences for the two groups #
-tmp		<- data.table(subset(mydata.match, month >= event.month - 3 & month <= event.month + 2))
-tmp		<- tmp[, list(	q = sum(q), q_othdrug = sum(q_othdrug), q_othchannel = sum(q_othchannel), 
+# Aggregate over 3 month window around the event 
+match.shtdat		<- data.table(subset(mydata, month >= event.month - 3 & month <= event.month + 2))
+match.shtdat		<- match.shtdat[, list(	q = sum(q), q_othdrug = sum(q_othdrug), q_othchannel = sum(q_othchannel), 
 						trip_cvs = sum(trip_cvs), trip_othdrug = sum(trip_othdrug), trip_othchannel = sum(trip_othchannel), 
 						dol_cvs = sum(dol_cvs), dol_othdrug = sum(dol_othdrug), dol_othchannel = sum(dol_othchannel), 
 						netdol_cvs = sum(netdol_cvs), netdol_othdrug = sum(netdol_othdrug), netdol_othchannel = sum(netdol_othchannel),
 						dol_total = sum(dol_total), netdol = sum(netdol)), 
 				by = list(treat, household_code, after)]
-tmp <- tmp[, drop:= 1*(length(after) < 2), by = list(household_code)]
-table(tmp$drop)									# 1 household did not both 2 period data
-tmp <- subset(tmp, drop == 0)				
-setkeyv(tmp, c( "treat", "household_code","after"))
+match.shtdat 	<- match.shtdat[, drop:= 1*(length(after) < 2), by = list(household_code)]
+table(match.shtdat$drop)									# 1 household did not both 2 period data
+match.shtdat 	<- subset(match.shtdat, drop == 0)				
+setkeyv(match.shtdat, c("household_code","after"))
+match.shtdat	<- match.shtdat[,list(q = diff(q), q_othdrug = diff(q_othdrug), q_othchannel = diff(q_othchannel), 
+						trip_cvs = diff(trip_cvs), trip_othdrug = diff(trip_othdrug), trip_othchannel = diff(trip_othchannel), 
+						dol_cvs = diff(dol_cvs), dol_othdrug = diff(dol_othdrug), dol_othchannel = diff(dol_othchannel), 
+						netdol_cvs = diff(netdol_cvs), netdol_othdrug = diff(netdol_othdrug), netdol_othchannel = diff(netdol_othchannel),
+						dol_total = diff(dol_total), netdol = diff(netdol)
+									), 
+								by = list(household_code, treat)]
+match.shtdat	<- data.frame(match.shtdat)
+match.shtdat	<- match.shtdat[order(match.shtdat$household_code),]
+mypan			<- mypan[order(mypan$household_code), ]
+mypan1			<- subset(mypan, household_code %in% match.shtdat$household_code)
+max(abs(mypan1$household_code - match.shtdat$household_code))
 
-# Calculate before-after difference for each household 
-selcol <- setdiff(names(tmp), c( "treat", "household_code","after","drop"))
-sel <- tmp$after == 1
-m.bf <- as.matrix(tmp[!sel,selcol, with=FALSE])
-m.af <- as.matrix(tmp[sel,selcol, with=FALSE])
-m.bf[is.na(m.bf)] <- 0
-m.af[is.na(m.af)] <- 0
-dim(m.bf); dim(m.af)
-d   <- m.af - m.bf
-treat.idx <- unique(tmp, by = c("treat", "household_code"))$treat
+# Run logit propensity score
+my.ratio	<- 1
+psmod  		<- glm(treat ~ income + age + have_kids + employment + race + distance_cvs +
+                pre_q + pre_trip_total + pre_trip_othchannel+ pre_dol_total + pre_dol_othchannel,
+              data = mypan1[,c("household_code","treat", "distance_cvs",demo.col,bhv.col)], family=binomial )
+pshat  		<- psmod$fitted
+Tr  		<- mypan1$treat
 
-# T-test of 1st difference #
-ggtab1	<- NULL
-for(i in selcol){
-  tmp		<- t.test(d[,i] ~ treat.idx)
-  tmp1	<- c(tmp$estimate, dif = diff(tmp$estimate), tmp$statistic, p = tmp$p.value)
-  ggtab1	<- rbind(ggtab1, tmp1)
+# Run matching for each DV 
+(dv.col 	<- setdiff(names(match.shtdat), c( "treat", "household_code","after")))
+att.est		<- att.est1	<- matrix(NA, length(dv.col), 4)
+dimnames(att.est)	<- dimnames(att.est) <- list(dv.col, c("Estimate", "Std. Error", "t value", "Pr(>|t|)"))
+for(i in 1:length(dv.col)){
+	# Matching without replacement 
+	rr  	<- Match(Y=match.shtdat[,dv.col[i]], Tr=Tr, X=pshat, M=my.ratio, replace = FALSE)
+	print(summary(rr))
+	att.est[i,]	<- c(rr$est, rr$se, rr$est/rr$se, 2*pt(-abs(rr$est/rr$se), df = rr$wnobs))
+	
+	# Matching with replacement 
+	rr1  	<- Match(Y=match.shtdat[,dv.col[i]], Tr=Tr, X=pshat, M=my.ratio, replace = TRUE)
+	print(summary(rr1))
+	att.est1[i,]	<- c(rr1$est, rr1$se, rr1$est/rr1$se, 2*pt(-abs(rr1$est/rr1$se), df = rr1$wnobs))	
 }
-dimnames(ggtab1) <- list(selcol, c("Control", "Treatment", "Difference", "t stat", "P value"))
-cat("Before-after difference between treatment and control group for the matched sample during 201406 - 201411\n"); print(ggtab1); cat("\n")
+class(att.est)	<- class(att.est1) <- "coeftest"
+table(rr$weights); table(rr1$weights)
+mb	<- MatchBalance(treat~income + age + have_kids + employment + race + distance_cvs +
+                pre_q + pre_trip_total + pre_trip_othchannel+ pre_dol_total + pre_dol_othchannel, 
+					data=mypan1, match.out=rr, nboots=100)
+mb1	<- MatchBalance(treat~income + age + have_kids + employment + race + distance_cvs +
+                pre_q + pre_trip_total + pre_trip_othchannel+ pre_dol_total + pre_dol_othchannel, 
+					data=mypan1, match.out=rr1, nboots=100)
+					
+tmp1<- sapply(mb$BeforeMatching, function(x) c(x$mean.Co,x$Mean.Tr, x$sdiff, x$tt$p.value, 
+										ifelse("ks" %in% names(x), x$ks$ks.boot.pvalue, x$tt$p.value) ))
+tmp2<- sapply(mb$AfterMatching, function(x) c(x$mean.Co,x$Mean.Tr, x$sdiff, x$tt$p.value, 
+										ifelse("ks" %in% names(x), x$ks$ks.boot.pvalue, x$tt$p.value) ))
+tmp3<- sapply(mb1$AfterMatching, function(x) c(x$mean.Co,x$Mean.Tr, x$sdiff, x$tt$p.value, 
+										ifelse("ks" %in% names(x), x$ks$ks.boot.pvalue, x$tt$p.value) ))
+tmp	<- model.matrix(psmod)[,-1]												
+dimnames(tmp1)	<- dimnames(tmp2)	<-	dimnames(tmp3)	<-list(c("Mean Control", "Mean Treatment", "t p-value", "KS bootstrap p-value"), colnames(tmp))
+blc	<- cbind(t(tmp1), t(tmp2), t(tmp3))
 
-# --------------------------------------------------- #
-# Overall before-after differences for the two groups in the case of matching with replacement
-tmp		<- data.table(subset(mydata.match1, month >= event.month - 3 & month <= event.month + 2))
-tmp		<- tmp[, list(	q = sum(q), q_othdrug = sum(q_othdrug), q_othchannel = sum(q_othchannel), 
-						trip_cvs = sum(trip_cvs), trip_othdrug = sum(trip_othdrug), trip_othchannel = sum(trip_othchannel), 
-						dol_cvs = sum(dol_cvs), dol_othdrug = sum(dol_othdrug), dol_othchannel = sum(dol_othchannel), 
-						netdol_cvs = sum(netdol_cvs), netdol_othdrug = sum(netdol_othdrug), netdol_othchannel = sum(netdol_othchannel),
-						dol_total = sum(dol_total), netdol = sum(netdol)), 
-				by = list(treat, household_code1, after)]
-tmp <- tmp[, drop:= 1*(length(after) < 2), by = list(household_code1)]
-table(tmp$drop)									# 1 household did not both 2 period data
-tmp <- subset(tmp, drop == 0)				
-setkeyv(tmp, c( "treat", "household_code1","after"))
-
-# Calculate before-after difference for each household 
-selcol <- setdiff(names(tmp), c( "treat", "household_code1","after","drop"))
-sel <- tmp$after == 1
-m.bf <- as.matrix(tmp[!sel,selcol, with=FALSE])
-m.af <- as.matrix(tmp[sel,selcol, with=FALSE])
-m.bf[is.na(m.bf)] <- 0
-m.af[is.na(m.af)] <- 0
-dim(m.bf); dim(m.af)
-d   <- m.af - m.bf
-treat.idx <- unique(tmp, by = c("treat", "household_code1"))$treat
-
-# T-test of 1st difference #
-ggtab2	<- NULL
-for(i in selcol){
-  tmp		<- t.test(d[,i] ~ treat.idx)
-  tmp1	<- c(tmp$estimate, dif = diff(tmp$estimate), tmp$statistic, p = tmp$p.value)
-  ggtab2	<- rbind(ggtab2, tmp1)
-}
-dimnames(ggtab2) <- list(selcol, c("Control", "Treatment", "Difference", "t stat", "P value"))
-cat("Before-after difference between treatment and control group for the matched sample during 201406 - 201411 
-	in the case of matching with replacement\n"); print(round(ggtab2,2)); cat("\n")
-
-stargazer(list(blc, cbind(ggtab1, ggtab2)), type = "html", summary = FALSE, align = TRUE, no.space = TRUE, digits = 2,
+stargazer(list(blc, list(att.est, att.est1)), type = "html", summary = FALSE, align = TRUE, no.space = TRUE, digits = 2,
           title = c("Balance Check among smokers", "Before-after difference between treatment and control group for the matched sample during 201406 - 201411"),
           out = paste(plot.wd, "/tb_", out.file, "_balance_",Sys.Date(), ".html", sep=""))
 
