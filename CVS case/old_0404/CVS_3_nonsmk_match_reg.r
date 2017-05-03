@@ -10,29 +10,31 @@ library(xlsx)
 library(MatchIt)
 library(lmtest)
 library(Matching)
-library(AER)
 
-setwd("~/Documents/Research/Tobacco/processed_data")
-plot.wd		<- "~/Desktop"
-# setwd("U:/Users/ccv103/Documents/Research/tobacco/processed_data")
+# setwd("~/Documents/Research/Tobacco/processed_data")
+# plot.wd		<- "~/Desktop"
+setwd("U:/Users/ccv103/Documents/Research/tobacco/processed_data")
 # setwd("/sscc/home/c/ccv103/Tobacco") 
-# plot.wd		<- getwd()
-out.file	<- "cvs_baseline_matchagg"
+plot.wd		<- getwd()
+out.file	<- "cvs_nonsmk_match_agg"
 ww			<- 6.5
 ar			<- .6
+sink(paste("log_", out.file, ".txt", sep=""), append = FALSE)
 
 panelists 	<- read.csv("tob_CVS_pan.csv", header = T)
 purchases	<- read.csv("tob_CVS_purchases.csv", header = T)
 trips		<- read.csv("tob_CVS_trips.csv", header = T)
-names(panelists)	<- tolower(names(panelists))
+nsmk.pan 	<- read.csv("tob_CVS_nonsmk_pan.csv", header = T)
+nsmk.trips	<- read.csv("tob_CVS_nonsmk_trips.csv", header = T)
 ma.policy	<- read.xlsx("MA_policy.xlsx", 1)
 
-# Define the construction of treatment and control
-# 1: Control (smokers who never shopped at CVS), Treament (smokers who are also CVS shoppers)
-# 2: Control (smokers who shopped at CVS but did not buy cigarettes), Treament (smokers who also purchased cigarettes at CVS)
-# 3: Control (smokers who shopped at CVS but did not buy cigarettes), Treament (smokers who spent more than 17% CVS spending on cigarettes)
-treat.code	<- 2	
-(out.file 	<- paste(out.file, treat.code, sep="")	)	
+panelists$smk	<- 1
+nsmk.pan$smk	<- 0
+trips$smk		<- 1
+nsmk.trips$smk	<- 0
+panelists		<- rbind(panelists, nsmk.pan)
+trips			<- rbind(trips, nsmk.trips)
+names(panelists)	<- tolower(names(panelists))
 
 # # Select a random sample
 # sel		<- sample(unique(panelists$household_code), .1*length(unique(panelists$household_code)))
@@ -86,7 +88,7 @@ purchases	<- merge(purchases, trips[,c("trip_code_uc", "cvs", "channel_type")], 
 # Mark the places that already implement tobacco ban
 ma.policy$countynm	<- paste(toupper(substring(ma.policy$COUNTY, 1, 1)), tolower(substring(ma.policy$COUNTY, 2)), sep = "")
 sort(unique(panelists[panelists$statecode == "MA","countynm"]))
-cnty				<- c("Berkeley","Daly City","Healdsburg","Hollister","Marin","Richmond","San Francisco","Santa Clara", "Sonoma" )
+cnty		<- c("Berkeley","Daly City","Healdsburg","Hollister","Marin","Richmond","San Francisco","Santa Clara", "Sonoma" )
 panelists$ban_ard	<- with(panelists, 1*((statecode=="MA" & countynm %in% ma.policy$countynm)| (statecode=="CA" & countynm %in% cnty)))
 sort(unique(panelists[panelists$ban_ard==1,"countynm"]))
 table(panelists$ban_ard)
@@ -98,6 +100,7 @@ summary(tmp)
 mean(tmp$nzip>1)
 mypan	<- panelists[panelists$panel_year == 2014,]			# Use 2014 panelist profile
 median(mypan$distance_cvs, na.rm = T)
+mypan			<- subset(mypan, !is.na(distance_cvs))
 mypan$cvs_in2	<- ifelse(mypan$distance_cvs <=2, 1, 0)
 mypan$wgr_in2	<- ifelse(mypan$distance_walgreens <=2, 1, 0)
 
@@ -109,15 +112,16 @@ tmp1		<- tmp1[, list(consum = sum(quantity*size/qunit, na.rm=T)/(as.numeric(max(
 summary(tmp1$consum)
 tmp1$heavy 	<- 1*(tmp1$consum > 2.5)
 tmp			<- setNames(tmp1$heavy, tmp1$household_code)
-mypan$heavy <- tmp[as.character(mypan$household_code)]
+mypan$heavy 	<- tmp[as.character(mypan$household_code)]
+mypan[is.na(mypan$heavy), "heavy"]	<- 0
 
 # Distribution of the fraction of cigarette spending conditional on CVS visit
 tmp	<- data.table(subset(purchases, cvs==1 & purchase_date < event.date))
 tmp	<- tmp[,list(total_price_paid = sum(total_price_paid - coupon_value)), by = list(trip_code_uc)]
 tmp	<- merge(trips[trips$cvs==1 & trips$purchase_date < event.date, ], tmp, by = "trip_code_uc", all.x = T)
 tmp[is.na(tmp$total_price_paid), "total_price_paid"]	<- 0 
-tmp <- data.table(tmp[,c("household_code", "total_price_paid", "total_spent", "purchase_date")])
-tmp	<- tmp[,list(cig_frac = sum(total_price_paid)/sum(total_spent), 
+tmp 	<- data.table(tmp[,c("household_code", "total_price_paid", "total_spent", "purchase_date")])
+tmp		<- tmp[,list(cig_frac = sum(total_price_paid)/sum(total_spent), 
                   cig_frac_cond = sum(total_price_paid[total_price_paid>0])/sum(total_spent[total_price_paid>0]) ),
             by = list(household_code)]
 tmp[is.na(tmp)]	<- 0
@@ -155,6 +159,15 @@ demo.col				<- c("income", "age", "have_kids", "employment", "race")
 sel						<- sapply(demo.col, function(i) is.numeric(mypan[,i]))
 summary(mypan[,demo.col[sel]])
 lapply(demo.col[!sel], function(i) table(mypan[,i]))
+sel						<- apply(mypan[,demo.col], 1, function(x) any(is.na(x)))
+cat(sum(sel), "Households have missing demogrpahics.\n")
+mypan					<- mypan[!sel,]
+
+# For this analysis, we only focus on CVS shoppers. 
+cat(sum(mypan$frac_seg == "Never"),"households out of ", nrow(mypan), "never shopped at CVS, so drop them for this current analysis.\n")
+mypan		<- subset(mypan, frac_seg != "Never")
+purchases	<- subset(purchases, household_code %in% mypan$household_code)
+trips		<- subset(trips, household_code %in% mypan$household_code)
 
 # -------------------------- #
 # Fill in non-puchases months # 
@@ -168,31 +181,10 @@ tmp1	<- melt(tmp1)
 names(tmp1)	<- c("month", "household_code")
 tmp1$household_code	<- as.numeric(tmp1$household_code)
 
-# Actual cigarette purchases 
-tmp2	<- data.table(purchases)
-tmp2	<- tmp2[,list(	q = sum(quantity*size/qunit, na.rm=T), 
-						q_cvs 	= sum(quantity*size*cvs*1*(channel_type == "Drug Store")/qunit, na.rm=T),
-						q_othdrug = sum(quantity*size*(1-cvs)*1*(channel_type == "Drug Store")/qunit, na.rm=T), 
-						q_othchannel = sum(quantity*size*1*(channel_type != "Drug Store")/qunit, na.rm=T), 
-						q_convenience = sum(quantity*size*1*(channel_type == "Convenience Store")/qunit, na.rm=T), 
-						q_grocery	= sum(quantity*size*1*(channel_type == "Grocery")/qunit, na.rm=T), 
-						q_discount	= sum(quantity*size*1*(channel_type == "Discount Store")/qunit, na.rm=T), 
-						q_service	= sum(quantity*size*1*(channel_type %in% c("Service Station"))/qunit, na.rm=T),
-						q_gas		= sum(quantity*size*1*(channel_type %in% c("Gas Mini Mart"))/qunit, na.rm=T), 
-						q_tobacco 	= sum(quantity*size*1*(channel_type %in% c("Tobacco Store"))/qunit, na.rm=T), 
-						cigdol 		= sum(total_price_paid - coupon_value, na.rm=T), 
-						cigdol_cvs	= sum((total_price_paid - coupon_value)*cvs, na.rm=T),
-						cigdol_othdrug 	= sum((total_price_paid - coupon_value)*(1-cvs)*1*(channel_type == "Drug Store"), na.rm=T), 
-						cigdol_othchannel= sum((total_price_paid - coupon_value)*1*(channel_type != "Drug Store"), na.rm=T)), 
-				by = list(household_code, month)]
-dim(tmp1); dim(tmp2)
-mydata	<- merge(tmp1, tmp2, by = c("household_code", "month"), all.x = T)
-dim(mydata)
-
 # Trips and spending 
-tmp1 	<- data.table(trips)
-tmp1	<- tmp1[,list(total_spent = sum(total_spent)), by = list(household_code, month, purchase_date, channel_type, retailer_code, cvs)]
-tmp1	<- tmp1[,list(	trip_cvs 		= length(purchase_date[cvs==1]), 
+tmp2 	<- data.table(trips)
+tmp2	<- tmp2[,list(total_spent = sum(total_spent)), by = list(household_code, month, purchase_date, channel_type, retailer_code, cvs)]
+tmp2	<- tmp2[,list(	trip_cvs 		= length(purchase_date[cvs==1]),  
 						trip_othdrug 	= length(purchase_date[channel_type == "Drug Store" & cvs ==0] ), 
 						trip_othchannel = length(purchase_date[channel_type != "Drug Store"]), 
 						trip_grocery	= length(purchase_date[channel_type == "Grocery"]), 
@@ -200,7 +192,6 @@ tmp1	<- tmp1[,list(	trip_cvs 		= length(purchase_date[cvs==1]),
 						trip_convenience= length(purchase_date[channel_type == "Convenience Store"]), 
 						trip_service	= length(purchase_date[channel_type == "Service Station"]), 
 						trip_gas		= length(purchase_date[channel_type == "Gas Mini Mart"]), 
-						trip_total		= length(purchase_date),
 						dol_cvs 		= sum(total_spent*cvs, na.rm = T), 
 						dol_othdrug		= sum(total_spent*(1-cvs)*1*(channel_type == "Drug Store"), na.rm = T), 
 						dol_othchannel	= sum(total_spent*1*(channel_type != "Drug Store"), na.rm = T), 
@@ -212,35 +203,83 @@ tmp1	<- tmp1[,list(	trip_cvs 		= length(purchase_date[cvs==1]),
 						dol_total		= sum(total_spent)
 						), 
 				by = list(household_code, month)]
-dim(tmp1)		
-summary(tmp1[,list(trip_cvs, trip_othdrug, trip_othchannel)])
-mydata	<- merge(mydata, tmp1, by = c("household_code", "month"), all.x = T)
+dim(tmp1); dim(tmp2)		
+sum(is.na(tmp2))
+summary(tmp2[,list(trip_cvs, trip_othdrug, trip_othchannel)])
+mydata	<- merge(tmp1, tmp2, by = c("household_code", "month"), all.x = T)
+dim(mydata)
+
+# Cigarette spending
+# Actual cigarette purchases 
+tmp3	<- data.table(purchases)
+tmp3	<- tmp3[,list(	q = sum(quantity*size/qunit, na.rm=T),
+						cigdol 		= sum(total_price_paid - coupon_value, na.rm=T), 
+						cigdol_cvs	= sum((total_price_paid - coupon_value)*cvs, na.rm=T),
+						cigdol_othdrug 	= sum((total_price_paid - coupon_value)*(1-cvs)*1*(channel_type == "Drug Store"), na.rm=T), 
+						cigdol_othchannel= sum((total_price_paid - coupon_value)*1*(channel_type != "Drug Store"), na.rm=T)), 
+				by = list(household_code, month)]
+mydata	<- merge(mydata, tmp3, by = c("household_code", "month"), all.x = T)
 sel 	<- is.na(mydata)
 mydata[sel]	<- 0
 mydata$netdol			<- with(mydata, dol_total - cigdol)
 mydata$netdol_cvs		<- with(mydata, dol_cvs - cigdol_cvs)
 mydata$netdol_othdrug	<- with(mydata, dol_othdrug - cigdol_othdrug)
 mydata$netdol_othchannel<- with(mydata, dol_othchannel - cigdol_othchannel)
-cat("Summary stats:\n"); print(summary(mydata)); cat("\n")
+cat("Summary stats:\n"); print(summary(mydata[, -c(1:2)])); cat("\n")
 
 # Calculate pre-event shopping behavior for each household
-# tmp2	<- tmp1[month < event.month,]
+# NOTE: we have NAs for some trend measurement; 
 tmp2	<- data.table(subset(mydata, month < event.month))
-tmp2	<- tmp2[,list(	pre_q				= mean(q), 
+tmp2	<- tmp2[,list(	pre_q				= mean(q),
 						pre_trip_cvs 		= mean(trip_cvs), 
 						pre_trip_othdrug 	= mean(trip_othdrug), 
 						pre_trip_othchannel = mean(trip_othchannel), 
-						pre_trip_total		= mean(trip_total),
 						pre_dol_cvs 		= mean(dol_cvs), 
 						pre_dol_othdrug		= mean(dol_othdrug), 
 						pre_dol_othchannel	= mean(dol_othchannel), 
-						pre_dol_total		= mean(dol_total)), by = list(household_code)]
+						
+						pre_trip_cvs_H1		= mean(trip_cvs[month<=6]), 
+						pre_trip_othdrug_H1 	= mean(trip_othdrug[month<=6]), 
+						pre_trip_othchannel_H1 = mean(trip_othchannel[month<=6]), 
+						pre_dol_cvs_H1 		= mean(dol_cvs[month<=6]), 
+						pre_dol_othdrug_H1		= mean(dol_othdrug[month<=6]), 
+						pre_dol_othchannel_H1	= mean(dol_othchannel[month<=6]),
+						pre_trip_cvs_H2		= mean(trip_cvs[month>6 & month<=12]), 
+						pre_trip_othdrug_H2 	= mean(trip_othdrug[month>6 & month<=12]), 
+						pre_trip_othchannel_H2 = mean(trip_othchannel[month>6 & month<=12]), 
+						pre_dol_cvs_H2 		= mean(dol_cvs[month>6 & month<=12]), 
+						pre_dol_othdrug_H2		= mean(dol_othdrug[month>6 & month<=12]), 
+						pre_dol_othchannel_H2	= mean(dol_othchannel[month>6 & month<=12]),
+						
+						pre_trip_cvs_H3		= mean(trip_cvs[month>12 & month<=18]), 
+						pre_trip_othdrug_H3 	= mean(trip_othdrug[month>12 & month<=18]), 
+						pre_trip_othchannel_H3 = mean(trip_othchannel[month>12 & month<=18]), 
+						pre_dol_cvs_H3 		= mean(dol_cvs[month>12 & month<=18]), 
+						pre_dol_othdrug_H3		= mean(dol_othdrug[month>12 & month<=18]), 
+						pre_dol_othchannel_H3	= mean(dol_othchannel[month>12 & month<=18]),
+						pre_trip_cvs_H4		= mean(trip_cvs[month>18 & month < event.month]), 
+						pre_trip_othdrug_H4 	= mean(trip_othdrug[month>18 & month < event.month]), 
+						pre_trip_othchannel_H4 = mean(trip_othchannel[month>18 & month < event.month]), 
+						pre_dol_cvs_H4 		= mean(dol_cvs[month>18 & month < event.month]), 
+						pre_dol_othdrug_H4		= mean(dol_othdrug[month>18 & month < event.month]), 
+						pre_dol_othchannel_H4	= mean(dol_othchannel[month>18 & month < event.month])
+						), by = list(household_code)]
+summary(tmp2)
 mypan	<- merge(mypan, tmp2, by = "household_code", all.x = T)	
-bhv.col		<- c("pre_q", "pre_trip_total", "pre_trip_othchannel", "pre_dol_total", "pre_dol_othchannel")
+
+# Check any missing values in the panelist data
+demo.col
+bhv.col		<- c("pre_trip_cvs", "pre_trip_othdrug", "pre_trip_othchannel", "pre_dol_cvs", "pre_dol_othdrug", "pre_dol_othchannel")
+(bhv.col   <- paste(rep(bhv.col, 4), "_H", rep(1:4, each = 6), sep=""))
 sapply(bhv.col, function(i) sum(is.na(mypan[,i])))				
-sel		<- apply(mypan[,bhv.col], 1, function(x) any(is.na(x)))
-sum(sel)
-#mypan	<- mypan[!sel,]
+sel		<- apply(mypan[,c(demo.col,bhv.col)], 1, function(x) any(is.na(x)))
+if(sum(sel) > 0){
+	cat(sum(sel), "households have missing values in their behavioral metrics, so we drop them for this analysis. \n")
+	mypan	<- mypan[!sel,]
+	mydata	<- subset(mydata, household_code %in% mypan$household_code)
+	trips	<- subset(trips, household_code %in% mypan$household_code)
+	purchases	<- subset(purchases, household_code %in% mypan$household_code)
+}
 
 # Drop outliers
 summary(mypan$pre_q)
@@ -255,173 +294,138 @@ mydata$year		<- ifelse(mydata$month > 12, 2014, 2013)
 mydata$month1	<- mydata$month %% 12
 mydata$month1	<- ifelse(mydata$month1 == 0, 12, mydata$month1)
 mydata$month1	<- factor(mydata$month1)
-mydata			<- merge(mydata, mypan[,c("household_code", "panelist_zip_code","distance_cvs", "ban_ard","cvs_in2", "wgr_in2", "heavy", "frac_seg")], 
+dim(mydata)
+mydata			<- merge(mydata, mypan[,c("household_code", "panelist_zip_code", "distance_cvs", "cvs_in2", "wgr_in2", "heavy", "smk", "ban_ard", "frac_seg",demo.col)], 
 						by = "household_code", all.x=T)
 dim(mydata)
 mydata$after	<- 1*(mydata$month >= event.month)
 mydata$hhmonth	<- paste(mydata$household_code, mydata$month, sep="-")
 
 # Construct treatment and control 
-if(treat.code == 1){
-	mydata$treat	<- with(mydata, 1*(frac_seg != "Never" & ban_ard == 0 ))		
-	mypan$treat 	<- with(mypan, 1*(frac_seg != "Never" & ban_ard == 0 ))         # Define treatment dummy
-}else if(treat.code == 2){
-	mydata			<- subset(mydata, frac_seg != "Never")
-	mypan			<- subset(mypan, frac_seg != "Never")
-	mydata$treat	<- with(mydata, 1*(frac_seg != "Zero" & ban_ard == 0 ))
-	mypan$treat		<- with(mypan, 1*(frac_seg != "Zero" & ban_ard == 0 ))
-}else{
-	mydata			<- subset(mydata, frac_seg %in% c("Zero", "S2"))
-	mypan			<- subset(mypan, frac_seg %in% c("Zero", "S2"))
-	mydata$treat	<- with(mydata, 1*(frac_seg != "Zero" & ban_ard == 0 ))
-	mypan$treat		<- with(mypan, 1*(frac_seg != "Zero" & ban_ard == 0 ))	
-}
+mydata$treat	<- with(mydata, 1*(smk == 1 & ban_ard == 0))
+mypan$treat		<- with(mypan, 1*(smk == 1 & ban_ard == 0))
+cat("Table of treatment:\n")
 table(mydata$treat)
 table(mypan$treat)
+table(mypan$smk, mypan$frac_seg)
 table(mypan$treat, mypan$frac_seg)
 
-trips		<- merge(trips, mypan[,c("household_code", "treat")], by = "household_code")
-purchases	<- merge(purchases, mypan[,c("household_code", "treat")], by = "household_code")
+trips		<- merge(trips, mypan[,c("household_code", "treat")], by = "household_code", all.x = T)
+purchases	<- merge(purchases, mypan[,c("household_code", "treat")], by = "household_code", all.x = T)
+
+rm(list = c("tmp", "tmp1", "tmp2", "tmp3"))
 
 #############################		
 # Propensity score matching #		
 #############################
 # Aggregate over 3 month window around the event 
 num.month			<- 3
-match.shtdat		<- data.table(subset(mydata, month >= event.month - num.month & month <= event.month + num.month -1))
-match.shtdat		<- match.shtdat[, list(	q = sum(q)/num.month, q_cvs = sum(q_cvs)/num.month, q_othdrug = sum(q_othdrug)/num.month, q_othchannel = sum(q_othchannel)/num.month, 
-									trip_cvs = sum(trip_cvs)/num.month, trip_othdrug = sum(trip_othdrug)/num.month, trip_othchannel = sum(trip_othchannel)/num.month, 
-									dol_cvs = sum(dol_cvs)/num.month, dol_othdrug = sum(dol_othdrug)/num.month, dol_othchannel = sum(dol_othchannel)/num.month, 
-									netdol_cvs = sum(netdol_cvs)/num.month, netdol_othdrug = sum(netdol_othdrug)/num.month, netdol_othchannel = sum(netdol_othchannel)/num.month,
-									dol_total = sum(dol_total)/num.month, netdol = sum(netdol)/num.month, 
-									q_convenience = sum(q_convenience)/num.month, q_grocery = sum(q_grocery)/num.month, q_discount = sum(q_discount)/num.month, 
-									q_service = sum(q_service)/num.month, q_gas = sum(q_gas)/num.month, q_tobacco = sum(q_tobacco)/num.month), 
-									by = list(treat, household_code, after)]
+demo.col			<- c("income", "age", "have_kids", "employment", "race", "distance_cvs", 
+						"pre_trip_cvs", "pre_trip_othdrug", "pre_trip_othchannel", "pre_dol_cvs", "pre_dol_othdrug", "pre_dol_othchannel")
+match.shtdat		<- data.table(subset(mydata, month >= event.month - num.month & month <= event.month + num.month -1 ))
+match.shtdat		<- match.shtdat[, list(	trip_cvs = sum(trip_cvs)/num.month, trip_othdrug = sum(trip_othdrug)/num.month, trip_othchannel = sum(trip_othchannel)/num.month, 
+											dol_cvs = sum(dol_cvs)/num.month, dol_othdrug = sum(dol_othdrug)/num.month, dol_othchannel = sum(dol_othchannel)/num.month, 
+											netdol_cvs = sum(netdol_cvs)/num.month, netdol_othdrug = sum(netdol_othdrug)/num.month, netdol_othchannel = sum(netdol_othchannel)/num.month,
+											dol_total = sum(dol_total)/num.month, netdol = sum(netdol)/num.month), 
+									by = list(treat, household_code, after, frac_seg, smk)]
 match.shtdat 	<- match.shtdat[, drop:= 1*(length(after) < 2), by = list(household_code)]
 table(match.shtdat$drop)									# 1 household did not both 2 period data
+match.shtdat 	<- subset(match.shtdat, drop == 0)				
 setkeyv(match.shtdat, c("household_code","after"))
-match.shtdat	<- match.shtdat[,list(q = diff(q), q_cvs = diff(q_cvs), q_othdrug = diff(q_othdrug), q_othchannel = diff(q_othchannel), 
-								trip_cvs = diff(trip_cvs), trip_othdrug = diff(trip_othdrug), trip_othchannel = diff(trip_othchannel), 
-								dol_cvs = diff(dol_cvs), dol_othdrug = diff(dol_othdrug), dol_othchannel = diff(dol_othchannel), 
-								netdol_cvs = diff(netdol_cvs), netdol_othdrug = diff(netdol_othdrug), netdol_othchannel = diff(netdol_othchannel),
-								dol_total = diff(dol_total), netdol = diff(netdol), 
-								q_convenience = diff(q_convenience), q_grocery = diff(q_grocery), q_discount = diff(q_discount), 
-								q_service = diff(q_service), q_gas = diff(q_gas), q_tobacco = diff(q_tobacco)), 
-								by = list(household_code, treat)]
+match.shtdat	<- match.shtdat[,list(	trip_cvs = diff(trip_cvs), trip_othdrug = diff(trip_othdrug), trip_othchannel = diff(trip_othchannel), 
+										dol_cvs = diff(dol_cvs), dol_othdrug = diff(dol_othdrug), dol_othchannel = diff(dol_othchannel), 
+										netdol_cvs = diff(netdol_cvs), netdol_othdrug = diff(netdol_othdrug), netdol_othchannel = diff(netdol_othchannel),
+										dol_total = diff(dol_total), netdol = diff(netdol)), 
+								by = list(household_code, treat, frac_seg, smk)]
 match.shtdat	<- data.frame(match.shtdat)
-match.shtdat	<- merge(match.shtdat, mypan, by = "household_code")
-match.shtdat$dist_dummy	<- ifelse(match.shtdat$distance_cvs <= 2, 1, 0)
+match.shtdat	<- merge(match.shtdat, mypan[,c("household_code", demo.col)], by = "household_code", all.x = T)
 match.shtdat	<- match.shtdat[order(match.shtdat$household_code),]
 mypan			<- mypan[order(mypan$household_code), ]
-max(abs(mypan$household_code - match.shtdat$household_code))
+mypan1			<- subset(mypan, household_code %in% match.shtdat$household_code)
+max(abs(mypan1$household_code - match.shtdat$household_code))
 
 # Run logit propensity score
-my.ratio	<- 1
+dv.col		<- c("trip_cvs", "trip_othdrug", "trip_othchannel", "dol_cvs", "dol_othdrug", "dol_othchannel",     
+				 "netdol_cvs", "netdol_othdrug", "netdol_othchannel", "dol_total", "netdol")
 fml			<- treat ~ income + age + have_kids + employment + race + distance_cvs +
-                pre_q + pre_trip_total + pre_trip_othchannel+ pre_dol_total + pre_dol_othchannel
-psmod  		<- glm(fml,data = mypan, family=binomial )
+						pre_trip_cvs+pre_trip_othdrug +pre_trip_othchannel +pre_dol_cvs +pre_dol_othdrug +pre_dol_othchannel
+
+# Different treatment construction						
+sel1		<- !(match.shtdat$frac_seg == "Zero" & match.shtdat$smk == 1)
+sel2		<- !(mypan1$frac_seg == "Zero" & mypan1$smk == 1)
+sum(sel1)
+sum(sel2)
+
+# Set matching parameters
+my.ratio	<- 1
+my.commonspt<- TRUE
+my.caliper	<- .25
+numbt		<- 500
+
+psmod  		<- glm(fml,data = mypan1[sel2,], family=binomial )
 summary(psmod)
 pshat  		<- psmod$fitted
-Tr  		<- mypan$treat
+Tr  		<- mypan1[sel2,"treat"]
 
-# Run matching for each DV 
-# (dv.col 	<- setdiff(names(match.shtdat), c( "treat", "household_code","after", "distance_cvs", "dist_dummy")))
-dv.col		<- c("q", "q_cvs", "q_othdrug", "q_othchannel", 
-				"trip_cvs", "trip_othdrug", "trip_othchannel", "netdol_cvs", "netdol_othdrug","netdol_othchannel", 
-				"q_convenience", "q_grocery", "q_discount", "q_service", "q_gas", "q_tobacco")
-est.ols		<- est.mat	<- est.iv	<- est.fe	<- matrix(NA, length(dv.col), 4, 
-															dimnames = list(dv.col, c("Estimate", "Std. Error", "t value", "Pr(>|t|)")))
-my.commonspt		<- TRUE
-my.caliper			<- NULL
+est.ols		<- est.mat	<- est.fe	<- matrix(NA, length(dv.col), 4, 
+											dimnames = list(dv.col, c("Estimate", "Std. Error", "t value", "Pr(>|t|)")))
 for(i in 1:length(dv.col)){
-	dv.fml			<- as.formula(paste(dv.col[i], "~ treat"))
+	# dv.fml			<- as.formula(paste(dv.col[i], "~ treat"))
+	dv.fml			<- as.formula(paste(dv.col[i], "~ treat + income + age + have_kids + employment + race + distance_cvs +
+	                 		pre_trip_cvs+pre_trip_othdrug +pre_trip_othchannel +pre_dol_cvs +pre_dol_othdrug +pre_dol_othchannel"))
 	# OLS
-	est.ols[i,]	<- coeftest(lm(dv.fml, data = match.shtdat))["treat",]
-	
+	est.ols[i,]	<- coeftest(lm(dv.fml, data = match.shtdat[sel1,]))["treat",]
+		
 	# Matching without replacement 
 	# Notice that without replacement, the funciton does not return Abadie-Imbenns se. 
-	rr  	<- Match(Y=match.shtdat[,dv.col[i]], Tr=Tr, X=pshat, M=my.ratio, 
+	rr  	<- Match(Y=match.shtdat[sel1,dv.col[i]], Tr=Tr, X=pshat, M=my.ratio, 
 					replace = FALSE, CommonSupport = my.commonspt, caliper = my.caliper)
 	print(summary(rr))
 	est.mat[i,]	<- c(rr$est, rr$se.standard, rr$est/rr$se.standard, 2*pt(-abs(rr$est/rr$se.standard), df = rr$wnobs -1 ))
 	
-	# Distance as IV
-	est.iv[i,]	<- coeftest(ivreg(dv.fml, instruments = ~ log(distance_cvs), data = match.shtdat))["treat",]
-	
 	# Fixed effect model with matched households
-	tmpdat		<- subset(mydata, household_code %in% mypan[unlist(rr[c("index.treated", "index.control")]), "household_code"] &
-									month >= event.month - num.month & month <= event.month + num.month -1)
+	if(i == 1){
+		tmpdat		<- subset(mydata, household_code %in% mypan1[unlist(rr[c("index.treated", "index.control")]), "household_code"] &
+										month >= event.month - num.month & month <= event.month + num.month -1 &
+										!(frac_seg == "Zero" & smk == 1))
+	}
 	tmp		<- plm(as.formula(paste(dv.col[i], "~ treat + treat*after + after")), data = tmpdat, 
 					index = c("household_code", "month"), model = "within")
+		
 	cls.v	<- Cls.se.fn(tmp, cluster.vec = tmpdat[,"household_code"], return.se = FALSE)
-	est.fe[i,]	<- coeftest(tmp, vcov = cls.v)["treat:after",]
+	est.fe[i,]	<- coeftest(tmp, vcov = cls.v)["treat:after",]	
 }
-class(est.ols)	<- class(est.mat) <- class(est.iv) <- class(est.fe) <- "coeftest"
-table(rr$weights)
+class(est.ols)	<- class(est.mat) <- class(est.fe) <- "coeftest"
 
 # Check matching balance 
-numbt	<- 500
-mb	<- MatchBalance(fml, data=mypan, match.out=rr, nboots=numbt)					
+mb	<- MatchBalance(fml, data=mypan1[sel2,], match.out=rr, nboots=numbt)					
 tmp1<- sapply(mb$BeforeMatching, function(x) c(x$mean.Co,x$mean.Tr, x$sdiff.pooled/100, x$tt$p.value, 
 										ifelse("ks" %in% names(x), x$ks$ks.boot.pvalue, x$tt$p.value) ))
 tmp2<- sapply(mb$AfterMatching, function(x) c(x$mean.Co,x$mean.Tr, x$sdiff.pooled/100, x$tt$p.value, 
 										ifelse("ks" %in% names(x), x$ks$ks.boot.pvalue, x$tt$p.value) ))
 tmp	<- model.matrix(psmod)[,-1]		
 tmp.lab	<- c("Income", "Age", "Have kids", paste("Employment:", levels(mypan$employment)[-1]), paste("Race:", levels(mypan$race)[-1]), 
-			"Distance to CVS", "Cigarette consumption/m.", "No. total trips/m.", "No. trips to other channels/m.", 
-			"Total expenditure/m.", "Expenditure at other channels/m.")								
+			"Distance to CVS", "No. trips to CVS/m.", "No. trips to other drug stores/m.", "No. trips to other channels/m.", 
+			"Expenditure at CVS/m.", "Expenditure at other drug stores/m.", "Expenditure at other channels/m.")								
 cbind(colnames(tmp), tmp.lab)			
 dimnames(tmp1)	<- dimnames(tmp2)	<-	list(c("Mean Control", "Mean Treatment", "Std difference","t p-value", "KS bootstrap p-value"), tmp.lab)
-blc	<- cbind(t(tmp1), t(tmp2))
-nn	<- setNames(c(length(unique(rr$index.control)), length(unique(rr$index.treated)) ), 
-		c("Control w/o replacement", "Treated w/o replacement" ))
+blc		<-cbind(t(tmp1), t(tmp2))
+nn		<- c(length(unique(rr$index.control)), length(unique(rr$index.treated)) )												
 cat("The number of unique households:\n"); print(nn); cat("\n")
-cat("Balance check before matching (1-4), after matchging without replacement (5-8):\n"); print(round(blc,2)); cat("\n")
+cat("Balance check:\n"); print(round(blc,2)); cat("\n")
 
 # Print results 
-stargazer(list(OLS = est.ols, Matching = est.mat, IV = est.iv, Panel = est.fe), type = "text", 
-			column.labels = c("OLS", "Matching", "IV", "Panel"))
-
-# ---------------- #
-# Add covariates #
-est1.ols		<- est1.mat	<- est1.iv	<- est1.fe	<- matrix(NA, length(dv.col), 4, 
-															dimnames = list(dv.col, c("Estimate", "Std. Error", "t value", "Pr(>|t|)")))
-my.commonspt		<- TRUE
-my.caliper			<- NULL
-sel			<- match.shtdat$household_code %in% mypan[unlist(rr[c("index.treated", "index.control")]), "household_code"]
-table(mypan[sel,"frac_seg"])
-
-for(i in 1:length(dv.col)){
-	dv.fml			<- as.formula(paste(dv.col[i], "~ treat + income + age + have_kids + employment + race + distance_cvs +
-	                pre_q + pre_trip_total + pre_trip_othchannel+ pre_dol_total + pre_dol_othchannel"))
-	# OLS
-	est1.ols[i,]	<- coeftest(lm(dv.fml, data = match.shtdat))["treat",]
-
-	# Matching without replacement 
-	est1.mat[i,]	<- coeftest(lm(dv.fml, data = match.shtdat[sel,]))["treat",]
-
-	# Distance as IV
-	est1.iv[i,]	<- coeftest(ivreg(dv.fml, instruments = ~ log(distance_cvs), data = match.shtdat))["treat",]
-
-	# Fixed effect model with matched households
-	tmpdat		<- subset(mydata, household_code %in% mypan[unlist(rr[c("index.treated", "index.control")]), "household_code"] &
-									month >= event.month - num.month & month <= event.month + num.month -1)
-	tmp		<- plm(as.formula(paste(dv.col[i], "~ treat + treat*after + after")), data = tmpdat, 
-					index = c("household_code", "month"), model = "within")
-	cls.v	<- Cls.se.fn(tmp, cluster.vec = tmpdat[,"household_code"], return.se = FALSE)
-	est1.fe[i,]	<- coeftest(tmp, vcov = cls.v)["treat:after",]
-}
-class(est1.ols)	<- class(est1.mat) <- class(est1.iv) <- class(est1.fe) <- "coeftest"
-
-
-# Print results 
-stargazer(list(OLS = est1.ols, Matching = est1.mat, IV = est1.iv, Panel = est1.fe), type = "text", 
-			column.labels = c("OLS", "Matching", "IV", "Panel"))
+stargazer(list(OLS = est.ols, Matching = est.mat, Panel = est.fe), type = "text", 
+			column.labels = c("OLS", "Matching", "Panel"))
 
 myline	<- paste(names(nn), " (", nn, ")", sep="", collapse = ",")
-stargazer(list(blc, list(est.ols, est.mat, est.iv, est.fe), list(est1.ols, est1.mat, est1.iv, est1.fe)), 
-		  type = "html", summary = FALSE, align = TRUE, no.space = TRUE, digits = 2,
-          title = c("Balance Check among smokers", "Before-after difference between treatment and control group for the matched sample during 201406 - 201411", 
-					"Before-after difference between treatment and control group for the matched sample during 201406 - 201411"),
+stargazer(list(blc, list(est.ols, est.mat, est.fe)), type = "html", summary = FALSE, align = TRUE, no.space = TRUE, digits = 2,
+          title = c("Balance Check among smokers", "Before-after difference between treatment and control group for the matched sample during 201406 - 201411"),
 		  notes = myline,
           out = paste(plot.wd, "/tb_", out.file, "_balance_",Sys.Date(), ".html", sep=""))
+
+sink()
+			
+save.image(file = paste(plot.wd,"/", out.file, ".rdata", sep=""))
+
+cat("This program is done.\n")
