@@ -18,7 +18,7 @@ ma.policy	<- read.xlsx("MA_policy.xlsx", 1)
 # Clean household data # 
 ########################
 # Add week and format month variable
-event.date	<- as.Date("2014-09-01", format = "%Y-%m-%d")			# Placebo event 
+event.date	<- as.Date("2014-09-01", format = "%Y-%m-%d")			
 event.month	<- month(event.date) + 12
 cvs.ret	<- 4914		# retailer_code for CVS
 qunit	<- 20		# 20 cigaretts per pack 
@@ -27,13 +27,14 @@ purchases$purchase_date	<- as.Date(as.character(purchases$purchase_date), format
 purchases$week		<- ((as.numeric(purchases$purchase_date - firstw)) %/%7 + 1)* 7 + firstw - 1
 purchases$year		<- year(purchases$purchase_date)
 purchases$month		<- month(purchases$purchase_date)
-purchases$month		<- ifelse(purchases$year == 2012, 1, ifelse(purchases$year == 2013, purchases$month, purchases$month + 12))
+purchases$month		<- (purchases$year - 2013)*12 + purchases$month
 
 trips$purchase_date	<- as.Date(as.character(trips$purchase_date), format = "%Y-%m-%d")
 trips$week			<- ((as.numeric(trips$purchase_date - firstw)) %/%7 + 1)* 7 + firstw - 1
 trips$year			<- year(trips$purchase_date)
+trips				<- subset(trips, year > 2012)
 trips$month			<- month(trips$purchase_date)
-trips$month			<- ifelse(trips$year == 2012, 1, ifelse(trips$year == 2013, trips$month, trips$month + 12))
+trips$month			<- (trips$year - 2013)*12 + trips$month
 
 # Mark CVS
 trips$cvs	<- ifelse(trips$retailer_code == cvs.ret, 1, 0)
@@ -249,17 +250,38 @@ mydata$netdol_othchannel<- with(mydata, dol_othchannel - cigdol_othchannel)
 cat("Summary stats:\n"); print(summary(mydata)); cat("\n")
 
 # Calculate pre-event shopping behavior for each household
-tmp2	<- data.table(subset(mydata, month < event.month))
-tmp2	<- tmp2[,list(	pre_q				= mean(q), 
-						pre_trip_cvs 		= mean(trip_cvs), 
-						pre_trip_othdrug 	= mean(trip_othdrug), 
-						pre_trip_othchannel = mean(trip_othchannel), 
-						pre_trip_total		= mean(trip_total),
-						pre_dol_cvs 		= mean(dol_cvs), 
-						pre_dol_othdrug		= mean(dol_othdrug), 
-						pre_dol_othchannel	= mean(dol_othchannel), 
-						pre_dol_total		= mean(dol_total)), by = list(household_code)]
-mypan	<- merge(mypan, tmp2, by = "household_code", all.x = T)	
+mydata	<- mydata[order(mydata$household_code),]
+for(i in 0:7){
+	if(i == 0){
+		tmpp	<- data.table(subset(mydata, month < event.month - 3*i))
+	}else{
+		tmpp	<- data.table(subset(mydata, month < event.month - 3*(i-1) & month >= event.month - 3*i))
+	}
+	print(unique(tmpp$month))
+	tmpp	<- tmpp[,list(	pre_q				= mean(q), 
+							pre_trip_cvs 		= mean(trip_cvs), 
+							pre_trip_othdrug 	= mean(trip_othdrug), 
+							pre_trip_othchannel = mean(trip_othchannel), 
+							pre_trip_total		= mean(trip_total),
+							pre_dol_cvs 		= mean(dol_cvs), 
+							pre_dol_othdrug		= mean(dol_othdrug), 
+							pre_dol_othchannel	= mean(dol_othchannel), 
+							pre_dol_total		= mean(dol_total)), 
+						by = list(household_code)]
+	if(i == 0){
+		predat	<- tmpp
+		cat("dim(predat) = ", dim(predat), "\n")
+	}else{
+		names(tmpp)[-1]	<- paste(names(tmpp)[-1], i, sep="")
+		print(identical(predat$household, tmpp$household_code))
+		predat	<- merge(predat, tmpp, by = "household_code", all.x = T)
+	}	
+}	
+cat("dim(predat) = ", dim(predat), "\n")	
+
+dim(mypan)
+mypan	<- merge(mypan, predat, by = "household_code", all.x = T)	
+dim(mypan)
 bhv.col		<- c("pre_q", "pre_trip_total", "pre_trip_othchannel", "pre_dol_total", "pre_dol_othchannel")
 sapply(bhv.col, function(i) sum(is.na(mypan[,i])))				
 sel		<- apply(mypan[,bhv.col], 1, function(x) any(is.na(x)))

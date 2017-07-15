@@ -45,9 +45,9 @@ proc sql noprint;
 	drop table tmp; 
 quit; 
 
-* Read UPC-level purchase data;
+* Read UPC-level purchase data and trip data; 
 %macro read_groc_fun;
-	%do i=2013 %to 2014;
+	%do i=2013 %to 2015;
 		* Read panelists data for geographic market information; 
 		%let fpath = &dirname\&i\Annual_Files\panelists_&i..tsv;
 		%put &fpath;
@@ -122,7 +122,7 @@ proc sql noprint;
 	
 	* Merge product size; 
 	create table cig_purchases as 
-	select A.*, size1_amount*multi as size
+	select A.*, year(purchase_date) as year, size1_amount*multi as size
 	from tmp as A 
 	left join hms_products as B
 	on A.upc = B.upc and A.upc_ver_uc = B.upc_ver_uc; 
@@ -130,96 +130,17 @@ proc sql noprint;
 	drop table tmp, trips;
 quit; 
 
+data cig_purchases; 
+	set cig_purchases; 
+	where year >= 2013 and year <= 2015; 
+run; 
+
 proc sql; select nmiss(size)/count(*) from cig_purchases; quit; 
 proc datasets noprint; change tmp_trips = trips; run;
 
-***********************;
-* Household selection *; 
-***********************;
-/*
-Selection criteria: 
-1. households stay in data in 2013 and 2014
-2. Make at least 5 purchases of both years
-*/
-proc sql noprint;
-	* Tenure for each household; 
-	create table tmp1 as 
-	select household_code, count(panel_year) as n
-	from panelists
-	where panel_year in (2013, 2014)
-	group by household_code; 
-	
-	* Purchase incidence each year; 
-	create table tmp2 as 
-	select household_code, year, count(unique(purchase_date)) as n
-	from (	select *, year(purchase_date) as year 
-			from cig_purchases where household_code in (select household_code from tmp1 where n = 2) and size is not missing)
-	group by household_code, year
-	order by household_code, year; 
-	
-	* Average purchase incidence; 
-	create table tmp3 as 
-	select household_code, mean(n) as n
-	from tmp2 
-	group by household_code;
-	
-	* Extract the selected households; 
-	create table keephh as
-	select household_code 
-	from tmp3 
-	where n >= 5; 
-	
-	* Extract non-smokers; 
-	create table nonsmkers as 
-	select distinct household_code
-	from tmp1
-	where household_code not in (select household_code from tmp3) and n = 2; 
-quit; 
-proc sql; 
-	select sum(n=2)/count(*) as pct_hh from tmp1; 
-	select mean(n) as mean_purchases from tmp2; 
-	select sum(n>=5)/count(*) as pct_sel from tmp3; 
-	select count(unique(household_code)) from nonsmkers; 
-	select count(unique(household_code)) from keephh;
-quit; 
-proc datasets noprint; delete tmp1 tmp2 tmp3; run;
-
-* Check if interpurchase days are too long;
-proc sql noprint;
-	create table tmp as 
-	select *
-	from trips 
-	where household_code in (select household_code from keephh)
-	order by household_code, purchase_date; 
-quit; 
-data tmp;
-	set tmp;
-	gap = dif(purchase_date); 
-	by household_code; 
-	if first.household_code then gap = .;
-run;
-
-proc univariate data = tmp; var gap; run;
-
-* Subset data: subset the trips and purchases to the selected houseolds; 
-proc sql noprint;
-	create table sub_panelists as 
-	select *
-	from panelists
-	where household_code in (select household_code from keephh); 
-	
-	* Subset trip data; 
-	create table sub_trips as 
-	select *
-	from trips where household_code in (select household_code from keephh) 
-	order by household_code, purchase_date;  
-	
-	create table subcig_purchases as 
-	select * from cig_purchases 
-	where household_code in (select household_code from keephh) 
-	order by household_code, purchase_date; 
-quit; 
-	
+*************************************;
+* Contruct panelist characteristics *;
+*************************************;
 * ----------------------------------*; 	
 * Add distance to the panelist data *; 
 PROC IMPORT OUT= location_cvs
@@ -251,7 +172,7 @@ proc datasets noprint; delete location_cvs location_wgr; run;
 proc sql noprint;
 	create table tmp as 
 	select panelist_zip_code, substr(put(panelist_zip_code, z5.), 1, 3) as hh_zip3, B.Y as hh_latitude, B.X as hh_longitude, COUNTY as hh_county
-	from (select distinct panelist_zip_code from sub_panelists) as A
+	from (select distinct panelist_zip_code from panelists) as A
 	left join SASHELP.zipcode as B
 	on A.panelist_zip_code = B.zip; 
 	
@@ -303,7 +224,7 @@ run;
 proc sql noprint;
 	create table tmp as 
 	select A.household_code, A.panel_year, A.panelist_zip_code, retailer, distance
-	from sub_panelists as A
+	from panelists as A
 	left join 
 	(select panelist_zip_code, retailer, min(distance) as distance from allzip 
 		group by panelist_zip_code, retailer) as B
@@ -325,19 +246,137 @@ proc sql noprint;
 	select A.household_code, A.panel_year, panelist_zip_code, distance_cvs, distance_walgreens, scantrack_market_descr, 
 		household_income, household_size, male_head_age, male_head_employment, female_head_age, female_head_employment, 
 		age_and_presence_of_children, race, projection_factor
-	from sub_panelists as A 
+	from panelists as A 
 	left join dist as B
 	on A.household_code = B.household_code and A.panel_year = B.panel_year
 	order by household_code, panel_year; 
 	
 	* Append county; 
-	create table sub_pan as 
+	create table all_pan as 
 	select A.*, B.city, B.countynm, B.statecode
 	from tmp as A left join sashelp.zipcode as B
 	on A.panelist_zip_code = B.zip
 	order by household_code, panel_year; 
+quit;
+proc contents data = all_pan; run;
+
+* Export data; 
+PROC EXPORT DATA= all_pan
+            OUTFILE= "U:\Users\ccv103\Desktop\tob_CVS_allpan.csv"
+            DBMS=csv REPLACE;
+     PUTNAMES=YES;
+RUN;
+
+******************************;
+* Smoker Household selection *;
+******************************;
+/*
+Selection criteria: 
+1. households must show up in data in 2014
+2. Make at least 3 purchases of cigarettes each years
+3. Interpurchase days no longer than 90 days
+*/
+%let min_purch = 3; 
+%let max_gap = 90; 
+
+proc sql noprint;
+	* Tenure for each household; 
+	create table tmp1 as 
+	select household_code, count(panel_year) as n, sum(panel_year=2014) as in2014
+	from panelists
+	where panel_year in (2013, 2014, 2015)
+	group by household_code; 
+	
+	* Purchase incidence each year; 
+	create table tmp2 as 
+	select household_code, year, count(unique(purchase_date)) as n
+	from (	select *
+			from cig_purchases where household_code in (select household_code from tmp1 where in2014=1) and size is not missing)	
+	group by household_code, year
+	order by household_code, year; 
+	
+	* Cigarette purchase incidence; 
+	create table tmp3 as 
+	select household_code, min(n) as n, count(year) as n_year
+	from tmp2 
+	group by household_code;	
+
+	* Check if interpurchase days are too long;
+	create table tmp as 
+	select household_code, purchase_date
+	from trips 
+	where household_code in (select household_code from tmp1 where in2014=1)
+	order by household_code, purchase_date; 
 quit; 
 
+data tmp;
+	set tmp;
+	gap = dif(purchase_date); 
+	by household_code; 
+	if first.household_code then gap = .;
+run;
+
+proc sql noprint;
+	* Max interpurchase time for each household; 
+	create table tmp4 as 
+	select household_code, max(gap) as gap 
+	from tmp 
+	group by household_code; 
+quit; 
+
+* See how many households are satisfied with selection rule; 
+proc sql; 
+	select sum(n=3)/count(*) as pct_all3 from tmp1; 
+	select sum(in2014)/count(*) as pct_hh from tmp1; 
+	select sum(n>=&min_purch)/count(*) as pct_sel from tmp3; 
+	select sum(n_year = 3)/count(*) as pct_sel1 from tmp3; 
+	select sum(gap <= &max_gap) as n_sel2 from tmp4; 
+quit; 
+
+* Subset households whose interpurchase days no longer than 90 days; 
+proc sql noprint;
+	* Extract the selected households; 
+	create table keephh as
+	select household_code 
+	from tmp3 
+	where n >= &min_purch and 
+		household_code in (select household_code from tmp1 where in2014=1) and 
+		household_code in (select household_code from tmp4 where gap <= &max_gap)
+	order by household_code; 
+	
+	* Extract non-smokers; 
+	create table nonsmkers as 
+	select distinct household_code
+	from tmp1
+	where household_code not in (select household_code from tmp3) and in2014=1 and 
+			household_code in (select household_code from tmp4 where gap <= &max_gap); 
+quit;
+proc datasets noprint; delete tmp tmp1 tmp2 tmp3 tmp4; run;
+
+proc sql; 
+	select count(unique(household_code)) from nonsmkers; 
+	select count(unique(household_code)) from keephh;
+quit; 
+
+* Subset data: subset the trips and purchases to the selected houseolds; 
+proc sql noprint;
+	create table sub_panelists as 
+	select *
+	from all_pan
+	where household_code in (select household_code from keephh); 
+	
+	* Subset trip data; 
+	create table sub_trips as 
+	select *
+	from trips where household_code in (select household_code from keephh) 
+	order by household_code, purchase_date;  
+	
+	create table subcig_purchases as 
+	select * from cig_purchases 
+	where household_code in (select household_code from keephh) 
+	order by household_code, purchase_date; 
+quit; 
+	
 data subcig_purchases;
 	format UPC 15.; 
 	set subcig_purchases; 
@@ -369,103 +408,13 @@ RUN;
 proc sql noprint;
 	create table sub_nonsmkers as 
 	select *
-	from panelists
+	from all_pan
 	where household_code in (select household_code from nonsmkers); 
 	
 	create table sub_trips_nonsmkers as 
 	select * from trips 
 	where household_code in (select household_code from nonsmkers)
 	order by household_code, purchase_date;  
-quit; 
-
-* Merge latitude and longitude; 
-proc sql noprint;
-	create table tmp as 
-	select panelist_zip_code, substr(put(panelist_zip_code, z5.), 1, 3) as hh_zip3, B.Y as hh_latitude, B.X as hh_longitude, COUNTY as hh_county
-	from (select distinct panelist_zip_code from sub_nonsmkers) as A
-	left join SASHELP.zipcode as B
-	on A.panelist_zip_code = B.zip; 
-	
-	create table tmp1 as 
-	select panelist_zip_code, hh_latitude, hh_longitude, hh_zip3, hh_county, B.retailer, B.latitude, B.longitude, B.zip_code as store_zip
-	from tmp as A
-	left join 
-	(select C.*, substr(put(zip_code, z5.), 1, 3) as zip3, county as store_county
-	from location(drop=county) as C
-	left join SASHELP.zipcode as D
-	on C.zip_code = D.zip)  as B	
-	on A.hh_county = B.store_county;
-
-* Check if a unique household zip code has all the candidate stores; 
-	create table tmp2 as 
-	select *, ifn(count(unique(retailer))<2, 1, 0) as id
-	from tmp1 
-	group by panelist_zip_code; 
-
-* For the zipcode that did not have a store match in the county, merge all the stores for those zip codes; 	
-	create table tmp3 as 
-	select A.*, B.retailer, B.latitude, B.longitude, B.zip_code as store_zip
-	from (select distinct id, panelist_zip_code, hh_longitude, hh_latitude, hh_county, hh_zip3
-		from tmp2 where id = 1) as A
-	full join (select *, 1 as fullid from location ) as B
-	on A.id = B.fullid
-	order by panelist_zip_code; 
-quit; 
-
-data allzip; 
-	set tmp2(where = (id = 0)) tmp3; 
-	drop id; 
-proc sort; by panelist_zip_code; 	
-run;
-proc datasets noprint; delete tmp tmp1 tmp2 tmp3; run;
-
-%let pi180=0.0174532925199433;
-data allzip;
-	set allzip;
-	if latitude ^=. and hh_latitude ^=. then do; 
-		a = sin((hh_latitude*&pi180-latitude*&pi180)/2)**2 + 
-			cos(latitude*&pi180)*cos(hh_latitude*&pi180)*sin((longitude*&pi180-hh_longitude*&pi180)/2)**2;
-		b =  2*atan2(sqrt(a), sqrt(1-a));
-		distance = 3959*b; 
-	end; 
-	drop a b;
-run; 
-
-proc sql noprint;
-	create table tmp as 
-	select A.household_code, A.panel_year, A.panelist_zip_code, retailer, distance
-	from sub_nonsmkers as A
-	left join 
-	(select panelist_zip_code, retailer, min(distance) as distance from allzip 
-		group by panelist_zip_code, retailer) as B
-	on A.panelist_zip_code = B.panelist_zip_code
-	order by household_code, panel_year, retailer;
-quit; 
-
-proc transpose data = tmp out = dist prefix = distance_; 
-	by household_code panel_year; 
-	id retailer; 
-	var distance; 
-run;
-
-proc sql noprint; 
-	create table tmp as 
-	select A.household_code, A.panel_year, panelist_zip_code, distance_cvs, distance_walgreens, scantrack_market_descr, 
-		household_income, household_size, male_head_age, male_head_employment, female_head_age, female_head_employment, 
-		age_and_presence_of_children, race, projection_factor
-	from sub_nonsmkers as A 
-	left join dist as B
-	on A.household_code = B.household_code and A.panel_year = B.panel_year
-	order by household_code, panel_year; 
-	
-	drop table sub_nonsmkers; 
-	
-	* Append county; 
-	create table sub_nonsmkers as
-	select A.*, B.city, B.countynm, B.statecode
-	from tmp as A left join sashelp.zipcode as B
-	on A.panelist_zip_code = B.zip
-	order by household_code, panel_year;
 quit; 
 
 proc contents data = sub_nonsmkers; run;

@@ -39,13 +39,14 @@ purchases$purchase_date	<- as.Date(as.character(purchases$purchase_date), format
 purchases$week		<- ((as.numeric(purchases$purchase_date - firstw)) %/%7 + 1)* 7 + firstw - 1
 purchases$year		<- year(purchases$purchase_date)
 purchases$month		<- month(purchases$purchase_date)
-purchases$month		<- ifelse(purchases$year == 2012, 1, ifelse(purchases$year == 2013, purchases$month, purchases$month + 12))
+purchases$month		<- (purchases$year - 2013)*12 + purchases$month
 
 trips$purchase_date	<- as.Date(as.character(trips$purchase_date), format = "%Y-%m-%d")
 trips$week			<- ((as.numeric(trips$purchase_date - firstw)) %/%7 + 1)* 7 + firstw - 1
 trips$year			<- year(trips$purchase_date)
+trips				<- subset(trips, year > 2012)
 trips$month			<- month(trips$purchase_date)
-trips$month			<- ifelse(trips$year == 2012, 1, ifelse(trips$year == 2013, trips$month, trips$month + 12))
+trips$month			<- (trips$year - 2013)*12 + trips$month
 endweek				<- c(min(purchases$week), max(purchases$week))
 
 # Mark CVS
@@ -53,10 +54,6 @@ trips$cvs	<- ifelse(trips$retailer_code == cvs.ret, 1, 0)
 purchases	<- merge(purchases, trips[,c("trip_code_uc", "cvs", "channel_type")], by = "trip_code_uc", all.x=T)
 
 # Mark the places that already implement tobacco ban
-# ma.policy$countynm	<- paste(toupper(substring(ma.policy$COUNTY, 1, 1)), tolower(substring(ma.policy$COUNTY, 2)), sep = "")
-# sort(unique(panelists[panelists$statecode == "MA","countynm"]))
-# cnty		<- c("Berkeley","Daly City","Healdsburg","Hollister","Marin","Richmond","San Francisco","Santa Clara", "Sonoma" )
-# panelists$ban_ard	<- with(panelists, 1*((statecode=="MA" & countynm %in% ma.policy$countynm)| (statecode=="CA" & countynm %in% cnty)))
 sort(unique(panelists[panelists$statecode == "MA","city"]))
 cnty				<- c("Berkeley","Daly City","Healdsburg","Hollister","Marin","Richmond","San Francisco","Santa Clara", "Sonoma" )
 panelists$ban_ard	<- with(panelists, 1*((statecode=="MA" & city %in% ma.policy$MUNICIPALITY)| (statecode=="CA" & countynm %in% cnty)))
@@ -263,17 +260,36 @@ cat("Summary stats:\n"); print(summary(nonsmk.trips[, -c(1:2)])); cat("\n")
 
 # Calculate pre-event shopping behavior for each household
 # NOTE: we have NAs for some trend measurement; 
-tmp2	<- data.table(subset(nonsmk.trips, month < event.month))
-tmp2	<- tmp2[,list(	pre_q				= mean(q),
-						pre_trip_cvs 		= mean(trip_cvs), 
-						pre_trip_othdrug 	= mean(trip_othdrug), 
-						pre_trip_othchannel = mean(trip_othchannel), 
-						pre_dol_cvs 		= mean(dol_cvs), 
-						pre_dol_othdrug		= mean(dol_othdrug), 
-						pre_dol_othchannel	= mean(dol_othchannel)
-						), by = list(household_code)]
-summary(tmp2)
-nonsmk.pan	<- merge(nonsmk.pan, tmp2, by = "household_code", all.x = T)	
+nonsmk.trips	<- nonsmk.trips[order(nonsmk.trips$household_code),]
+for(i in 0:7){
+	if(i == 0){
+		tmpp	<- data.table(subset(nonsmk.trips, month < event.month - 3*i))
+	}else{
+		tmpp	<- data.table(subset(nonsmk.trips, month < event.month - 3*(i-1) & month >= event.month - 3*i))
+	}
+	print(unique(tmpp$month))
+	tmpp	<- tmpp[,list(	pre_q				= mean(q),
+							pre_trip_cvs 		= mean(trip_cvs), 
+							pre_trip_othdrug 	= mean(trip_othdrug), 
+							pre_trip_othchannel = mean(trip_othchannel), 
+							pre_dol_cvs 		= mean(dol_cvs), 
+							pre_dol_othdrug		= mean(dol_othdrug), 
+							pre_dol_othchannel	= mean(dol_othchannel)
+							), by = list(household_code)]
+	if(i == 0){
+		predat	<- tmpp
+		cat("dim(predat) = ", dim(predat), "\n")
+	}else{
+		names(tmpp)[-1]	<- paste(names(tmpp)[-1], i, sep="")
+		print(identical(predat$household, tmpp$household_code))
+		predat	<- merge(predat, tmpp, by = "household_code", all.x = T)
+	}	
+}	
+cat("dim(predat) = ", dim(predat), "\n")	
+
+dim(nonsmk.pan)
+nonsmk.pan	<- merge(nonsmk.pan, predat, by = "household_code", all.x = T)	
+dim(nonsmk.pan)
 
 # Check any missing values in the panelist data
 demo.col
@@ -301,5 +317,6 @@ dim(nonsmk.trips)
 nonsmk.trips$after	<- 1*(nonsmk.trips$month >= event.month)
 length(unique(nonsmk.trips$household_code))
 dim(nonsmk.pan)
+table(nonsmk.trips$month)
 
 save(nonsmk.pan, nonsmk.trips, file = "cvs_nonsmk.rdata")

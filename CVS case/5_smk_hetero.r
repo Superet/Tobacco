@@ -20,9 +20,10 @@ ww			<- 6.5
 ar			<- .6
 match.method	<- "ps"			# "genetic"
 out.file	<- paste(out.file, match.method, sep="_")
+match.code	<- 1
 
 load("cvs_smk.rdata")
-load('cvs_smk_bipt2_id.rdata')
+load(paste("cvs_smk_mch", match.code, "_id.rdata", sep=""))
 
 # Define the construction of treatment and control
 # 1: Control (smokers who never shopped at CVS), Treament (smokers who are also CVS shoppers)
@@ -32,7 +33,7 @@ treat.code	<- 2
 (out.file 	<- paste(out.file, treat.code, sep="")	)	
 smk.pan$treat	<- smk.pan[,paste("treat", treat.code, sep="")]
 smk.trips$treat	<- smk.trips[,paste("treat",treat.code,sep="")]
-sink(paste(plot.wd, "/log_", out.file, ".txt", sep=""), append = FALSE)
+# sink(paste(plot.wd, "/log_", out.file, ".txt", sep=""), append = FALSE)
 
 # # Select a random sample
 # sel		<- sample(unique(panelists$household_code), .1*length(unique(panelists$household_code)))
